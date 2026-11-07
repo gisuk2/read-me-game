@@ -195,32 +195,6 @@ describe('패링', () => {
   });
 });
 
-describe('포션', () => {
-  it('개수가 줄고, 마시는 시간이 끝나면 회복된다 (최대 체력 초과 없음)', () => {
-    const p = newPlayer();
-    p.hp = 30;
-    press(p, { potion: true });
-    expect(p.potions).toBe(PLAYER.potion.count - 1);
-    expect(p.state).toBe('potion');
-    hold(p, { moveX: 1 }, PLAYER.potion.drinkMs / 2);
-    expect(p.x).toBe(5000); // 마시는 동안 못 움직임
-    wait(p, PLAYER.potion.drinkMs);
-    expect(p.hp).toBe(Math.min(PLAYER.maxHp, 30 + PLAYER.potion.heal));
-
-    p.hp = PLAYER.maxHp - 5;
-    press(p, { potion: true });
-    wait(p, PLAYER.potion.drinkMs + 20);
-    expect(p.hp).toBe(PLAYER.maxHp);
-  });
-
-  it('포션이 0개면 마실 수 없다', () => {
-    const p = newPlayer();
-    p.potions = 0;
-    press(p, { potion: true });
-    expect(p.state).not.toBe('potion');
-  });
-});
-
 describe('스태미나', () => {
   it('소모 후 지연 시간이 지나야 회복되고, 최대치를 넘지 않는다', () => {
     const p = newPlayer();
@@ -317,13 +291,6 @@ describe('모션 진행률', () => {
     expect(p.attack?.phaseProgress).toBeCloseTo(0.5, 5);
   });
 
-  it('포션을 절반 마셨을 때 진행률이 0.5다', () => {
-    const p = newPlayer();
-    press(p, { potion: true });
-    wait(p, PLAYER.potion.drinkMs / 2);
-    expect(p.potionProgress).toBeCloseTo(0.5, 5);
-  });
-
   it('패링 판정이 끝나면 경직 단계로 바뀐다', () => {
     const p = newPlayer();
     press(p, { parry: true });
@@ -333,39 +300,29 @@ describe('모션 진행률', () => {
   });
 });
 
-describe('피격과 사망', () => {
-  it('맞으면 체력이 줄고, 경직 동안 맞은 반대쪽으로 밀려난 뒤 idle로 돌아온다', () => {
+describe('피격과 사망 (한 방 사망)', () => {
+  it('어떤 공격이든 한 방에 쓰러진다', () => {
     const p = newPlayer();
-    const result = p.applyHit(30, 4900, 5000); // 왼쪽에서 맞음
-    expect(result.died).toBe(false);
+    expect(p.applyHit(1, 4900, 5000)).toEqual({ died: true });
+    expect(p.isDead).toBe(true);
+  });
+
+  it('한 방 사망을 끄면 피해만큼 체력이 줄고, 경직 동안 맞은 반대쪽으로 밀려난 뒤 idle로 돌아온다', () => {
+    const p = new PlayerModel(5000, 5000, BIG_BOUNDS, { ...PLAYER, oneHitKill: false });
+    expect(p.applyHit(30, 4900, 5000).died).toBe(false); // 왼쪽에서 맞음
     expect(p.hp).toBe(PLAYER.maxHp - 30);
+    expect(p.state).toBe('hit');
+    press(p, { dash: true, attack: true }); // 경직 중 입력 무시
     expect(p.state).toBe('hit');
     wait(p, PLAYER.hit.stunMs);
     expect(p.x - 5000).toBeCloseTo(PLAYER.hit.knockback, 5);
     expect(p.state).toBe('idle');
-  });
-
-  it('경직 중에는 입력이 먹히지 않는다', () => {
-    const p = newPlayer();
-    p.applyHit(10, 4900, 5000);
-    press(p, { dash: true, attack: true });
-    expect(p.state).toBe('hit');
-  });
-
-  it('포션을 마시다 맞으면 끊기고, 포션은 이미 소모되어 회복되지 않는다', () => {
-    const p = newPlayer();
-    p.hp = 50;
-    press(p, { potion: true });
-    p.applyHit(10, 4900, 5000);
-    wait(p, PLAYER.potion.drinkMs + PLAYER.hit.stunMs);
-    expect(p.hp).toBe(40);
-    expect(p.potions).toBe(PLAYER.potion.count - 1);
-  });
-
-  it('체력이 0이 되면 쓰러지고, 이후 입력과 피격을 무시한다', () => {
-    const p = newPlayer();
     expect(p.applyHit(PLAYER.maxHp, 4900, 5000).died).toBe(true);
-    expect(p.isDead).toBe(true);
+  });
+
+  it('쓰러진 뒤에는 입력과 피격을 무시한다', () => {
+    const p = newPlayer();
+    p.applyHit(10, 4900, 5000);
     hold(p, { moveX: 1, attack: true }, 200);
     expect(p.x).toBe(5000);
     expect(p.applyHit(10, 4900, 5000).died).toBe(false);

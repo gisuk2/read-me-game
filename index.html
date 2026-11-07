@@ -35,7 +35,8 @@
         cursor: pointer;
       }
       #pause-menu,
-      #result-screen {
+      #result-screen,
+      #briefing {
         position: absolute;
         inset: 0;
         background: rgba(255, 255, 255, 0.88);
@@ -46,7 +47,8 @@
         gap: 12px;
       }
       #pause-menu[hidden],
-      #result-screen[hidden] {
+      #result-screen[hidden],
+      #briefing[hidden] {
         display: none;
       }
       #pause-menu h2,
@@ -55,7 +57,8 @@
         letter-spacing: 0.2em;
       }
       #pause-menu button,
-      #result-screen button {
+      #result-screen button,
+      #briefing button {
         width: 220px;
         padding: 10px;
         border: 1.5px solid #000;
@@ -64,7 +67,8 @@
         cursor: pointer;
       }
       #pause-menu button:hover,
-      #result-screen button:hover {
+      #result-screen button:hover,
+      #briefing button:hover {
         background: #000;
         color: #fff;
       }
@@ -76,6 +80,122 @@
         margin: 0 0 8px;
         color: #555;
         font-size: 14px;
+      }
+      /* 사망 지도 (QA 텔레메트리) */
+      #telemetry {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 4px;
+        font-family: ui-monospace, monospace;
+        font-size: 12px;
+        color: #333;
+      }
+      #telemetry[hidden] {
+        display: none;
+      }
+      #telemetry .label {
+        letter-spacing: 0.2em;
+        color: #888;
+      }
+      #death-map {
+        border: 1px solid #000;
+      }
+      #death-cause {
+        color: #d62828;
+      }
+      /* 헬퍼 브리핑 */
+      #briefing {
+        background: rgba(255, 255, 255, 0.96);
+        gap: 8px;
+      }
+      #briefing .speaker {
+        font-family: ui-monospace, monospace;
+        letter-spacing: 0.2em;
+        color: #888;
+        font-size: 12px;
+      }
+      #briefing-intro {
+        font-size: 15px;
+        line-height: 1.7;
+        text-align: center;
+      }
+      #briefing-intro p {
+        margin: 0;
+      }
+      /* 무기별 그림 카드 6장 (3열 × 2줄) */
+      #briefing-cards {
+        width: 860px;
+        margin: 2px 0;
+        padding: 0;
+        list-style: none;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 8px;
+      }
+      #briefing-cards[hidden],
+      #briefing-intro[hidden] {
+        display: none;
+      }
+      #briefing-cards li {
+        border: 1px solid #000;
+        padding: 8px 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+      }
+      #briefing-cards .card-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 14px;
+        border-bottom: 1px solid #ddd;
+        padding-bottom: 4px;
+      }
+      #briefing-cards .row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 4px;
+        font-size: 12.5px;
+      }
+      #briefing-cards .row .name {
+        margin-right: 2px;
+      }
+      #briefing-cards .tag {
+        font-family: ui-monospace, monospace;
+        font-size: 11px;
+        border: 1px solid #000;
+        padding: 0 5px;
+      }
+      #briefing-cards .tag.heavy {
+        color: #d62828;
+        border-color: #d62828;
+      }
+      /* 노이즈 기믹: 헬퍼가 알려준 정석이 더 이상 맞지 않는 칸 (학습 단계에서 사용) */
+      #briefing-cards .corrupted {
+        position: relative;
+        color: transparent !important;
+        text-shadow: -2px 0 #d62828, 2px 0 #000;
+        background: repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.18) 0 1px, transparent 1px 3px);
+        animation: glitch 0.35s steps(2) infinite;
+      }
+      @keyframes glitch {
+        0% { transform: translate(0, 0); filter: blur(0); }
+        50% { transform: translate(-1px, 1px); filter: blur(0.6px); }
+        100% { transform: translate(1px, -1px); filter: blur(0); }
+      }
+      #restart-note {
+        margin: 2px 0 0;
+      }
+      /* Tab: 크게 보기에서는 제목·버튼을 줄여 지도에 자리를 준다 */
+      #result-screen.big-map {
+        gap: 4px;
+      }
+      #result-screen.big-map h2,
+      #result-screen.big-map #result-subtitle,
+      #result-screen.big-map #telemetry .label:first-child {
+        display: none;
       }
       #controls {
         margin-top: 12px;
@@ -98,7 +218,8 @@
       <div id="pause-menu" hidden>
         <h2>일시정지</h2>
         <button id="resume-button">계속하기 (ESC)</button>
-        <button id="restart-button">처음부터 다시 (R)</button>
+        <button id="briefing-button">패턴 안내 (헬퍼)</button>
+        <button id="restart-button">처음부터 다시</button>
         <table id="controls">
           <tr><td>WASD</td><td>이동</td></tr>
           <tr><td>마우스</td><td>조준</td></tr>
@@ -106,13 +227,28 @@
           <tr><td>우클릭</td><td>패링</td></tr>
           <tr><td>Space</td><td>대시 (1·2타 후반에 캔슬 가능)</td></tr>
           <tr><td>대시 + 좌클릭</td><td>대시 찌르기</td></tr>
-          <tr><td>Q</td><td>포션</td></tr>
-          <tr><td>ESC / R</td><td>일시정지 / 재시작</td></tr>
+          <tr><td>ESC / R</td><td>일시정지 / 체크포인트에서 재시작</td></tr>
+          <tr><td>M / K</td><td>(테스트) 재시작 모드 전환 / 사망 기록 초기화</td></tr>
+          <tr><td></td><td>한 방 사망 → 직전 패턴부터 바로 재시도 (5번째에 체크포인트로)</td></tr>
         </table>
+      </div>
+      <div id="briefing" hidden>
+        <span class="speaker">HELPER · 베타 테스트 안내</span>
+        <div id="briefing-intro"></div>
+        <ul id="briefing-cards"></ul>
+        <button id="briefing-start">테스트 시작</button>
       </div>
       <div id="result-screen" hidden>
         <h2 id="result-title"></h2>
         <p id="result-subtitle"></p>
+        <div id="telemetry" hidden>
+          <span class="label">QA TELEMETRY · 버그 제보용 사망 데이터</span>
+          <canvas id="death-map" width="288" height="162"></canvas>
+          <span id="death-cause"></span>
+          <span id="death-stats"></span>
+          <span class="label">Tab: 지도 크게 보기</span>
+          <p id="restart-note"></p>
+        </div>
         <button id="result-restart">다시 시작 (R)</button>
       </div>
     </div>

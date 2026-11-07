@@ -4,7 +4,6 @@ import type { AttackShape } from '../src/utils/shapes';
 import { PlayerModel } from '../src/entities/player/PlayerModel';
 import { BossModel } from '../src/entities/boss/BossModel';
 import { BOSS } from '../src/config/bossBalance';
-import { PLAYER } from '../src/config/balance';
 import { NO_INPUT } from '../src/input/types';
 
 /** 테스트용 가짜 플레이어: 필요한 값만 직접 정하고, 맞은 기록을 남긴다 */
@@ -68,6 +67,7 @@ const bossAttack = (parryable: boolean) => ({
   phase: 'active' as const,
   pattern: { id: 'sweep' as const, damage: 20 },
   parryable,
+  melee: true,
   shape: circleOnPlayer,
 });
 
@@ -131,6 +131,14 @@ describe('보스 → 플레이어', () => {
     combat.resolve(player, boss);
     combat.resolve(player, boss);
     expect(player.hits).toEqual([20]);
+  });
+
+  it('원거리 타는 근접 판정이 없다 (조준선은 예고일 뿐, 맞히는 건 날아가는 탄)', () => {
+    const combat = new CombatSystem(rules);
+    const player = fakePlayer();
+    const events = combat.resolve(player, fakeBoss({ attack: { ...bossAttack(true), melee: false } }));
+    expect(player.hits).toEqual([]);
+    expect(events.length).toBe(0);
   });
 
   it('연속기: 다음 타(공격 번호가 바뀜)는 다시 맞는다', () => {
@@ -227,7 +235,7 @@ describe('실제 플레이어·보스 모델로 연결 확인', () => {
     expect(boss.hp).toBe(BOSS.maxHp - 10);
   });
 
-  it('보스의 휘두르기에 서 있으면 맞고, 판정 순간 패링하면 막는다', () => {
+  it('보스의 휘두르기에 서 있으면 쓰러지고, 판정 순간 패링하면 막는다', () => {
     const bounds = { width: 1000, height: 1000 };
 
     const runFight = (parryAtActive: boolean) => {
@@ -247,10 +255,10 @@ describe('실제 플레이어·보스 모델로 연결 확인', () => {
     };
 
     const stood = runFight(false);
-    expect(stood.player.hp).toBe(PLAYER.maxHp - BOSS.patterns[0].damage);
+    expect(stood.player.isDead).toBe(true); // 한 방 사망
 
     const parried = runFight(true);
-    expect(parried.player.hp).toBe(PLAYER.maxHp);
+    expect(parried.player.isDead).toBe(false);
     expect(parried.boss.posture).toBe(BOSS.posture.perParry);
   });
 });

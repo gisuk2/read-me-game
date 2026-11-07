@@ -76,12 +76,12 @@ export interface PlayerConfig {
     recoveryMs: number;
     staminaCost: number;
   };
-  potion: {
-    count: number;
-    /** 마시는 시간. 이 동안 움직일 수 없다 (맞으면 끊기고 포션은 소모됨) */
-    drinkMs: number;
-    heal: number;
-  };
+  /**
+   * 한 방 사망: 보스의 모든 공격에 한 번 맞으면 쓰러진다 (docs/design/learning-feedback.md §5.1).
+   * false면 예전처럼 피해만큼 체력이 준다 (쉬운 모드 등 대비).
+   */
+  oneHitKill: boolean;
+
   hit: {
     /** 맞았을 때 아무것도 못 하는 시간 */
     stunMs: number;
@@ -125,11 +125,7 @@ export const PLAYER: PlayerConfig = {
     recoveryMs: 250,
     staminaCost: 18,
   },
-  potion: {
-    count: 3,
-    drinkMs: 900,
-    heal: 40,
-  },
+  oneHitKill: true,
   hit: {
     stunMs: 350,
     knockback: 36,

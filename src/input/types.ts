@@ -15,7 +15,6 @@ export interface PlayerInput {
   attackHeld: boolean;
   parry: boolean;
   dash: boolean;
-  potion: boolean;
 }
 
 export const NO_INPUT: Readonly<PlayerInput> = Object.freeze({
@@ -26,5 +25,4 @@ export const NO_INPUT: Readonly<PlayerInput> = Object.freeze({
   attackHeld: false,
   parry: false,
   dash: false,
-  potion: false,
 });

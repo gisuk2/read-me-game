@@ -5,7 +5,6 @@ import { shapeOutline } from '../../utils/shapes';
 const BLACK = 0x000000;
 const WHITE = 0xffffff;
 const GREY = 0x555555;
-const LIGHT_GREY = 0xdddddd;
 
 /** 쉬고 있을 때 검이 몸 옆으로 비껴 있는 각도와 길이 비율 */
 const REST_ANGLE_OFFSET = 0.8;
@@ -38,7 +37,6 @@ export class PlayerView {
     this.drawSword(m);
     this.drawBody(m);
     this.drawShield(m);
-    this.drawPotion(m);
   }
 
   // ───────────────────────── 몸체 ─────────────────────────
@@ -99,7 +97,7 @@ export class PlayerView {
 
     if (!atk) {
       // 쉬는 자세 (포션 마시는 중·쓰러짐엔 검을 그리지 않음)
-      if (m.state === 'potion' || m.isDead) return;
+      if (m.isDead) return;
       const len = 56 * REST_LENGTH_RATIO;
       this.drawBlade(m.x, m.y, m.facing + REST_ANGLE_OFFSET, r, len, 3, 1);
       return;
@@ -243,38 +241,5 @@ export class PlayerView {
     g.beginPath();
     g.arc(m.x, m.y, lerp(r + 7, r + 3, t), m.facing - 0.8, m.facing + 0.8, false);
     g.strokePath();
-  }
-
-  // ───────────────────────── 포션 ─────────────────────────
-
-  /**
-   * 포션 모션
-   *  - 병이 허리에서 입 앞으로 올라옴 (처음 25%)
-   *  - 몸 둘레의 원형 게이지가 차오름 → 다 차면 회복
-   */
-  private drawPotion(m: PlayerModel): void {
-    const p = m.potionProgress;
-    if (p === null) return;
-    const g = this.g;
-    const r = this.radius;
-
-    // 진행 게이지
-    g.lineStyle(3, LIGHT_GREY, 1);
-    g.strokeCircle(m.x, m.y, r + 12);
-    g.lineStyle(3, GREY, 1);
-    g.beginPath();
-    g.arc(m.x, m.y, r + 12, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * p, false);
-    g.strokePath();
-
-    // 병
-    const raise = easeOutCubic(Math.min(1, p / 0.25));
-    const angle = lerp(m.facing + 1.6, m.facing, raise);
-    const dist = lerp(r + 6, r + 4, raise);
-    const bx = m.x + Math.cos(angle) * dist;
-    const by = m.y + Math.sin(angle) * dist;
-    g.fillStyle(WHITE, 1);
-    g.fillRoundedRect(bx - 3, by - 5, 6, 10, 2);
-    g.lineStyle(1.5, BLACK, 1);
-    g.strokeRoundedRect(bx - 3, by - 5, 6, 10, 2);
   }
 }

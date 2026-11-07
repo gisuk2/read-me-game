@@ -44,7 +44,6 @@ export class InputReader {
       attackHeld: pointer.leftButtonDown(),
       parry: clicks.parry,
       dash: Phaser.Input.Keyboard.JustDown(k.SPACE),
-      potion: Phaser.Input.Keyboard.JustDown(k.Q),
     };
   }
 

@@ -6,6 +6,8 @@ export interface PauseMenuHandlers {
   onPause: () => void;
   onResume: () => void;
   onRestart: () => void;
+  /** 헬퍼의 패턴 안내 다시 보기 */
+  onBriefing: () => void;
 }
 
 export class PauseMenu {
@@ -13,6 +15,7 @@ export class PauseMenu {
   private readonly pauseButton: HTMLElement;
   private readonly resumeButton: HTMLElement;
   private readonly restartButton: HTMLElement;
+  private readonly briefingButton: HTMLElement;
   private readonly listeners: Array<[HTMLElement, () => void]> = [];
 
   constructor(handlers: PauseMenuHandlers) {
@@ -20,10 +23,12 @@ export class PauseMenu {
     this.pauseButton = PauseMenu.el('pause-button');
     this.resumeButton = PauseMenu.el('resume-button');
     this.restartButton = PauseMenu.el('restart-button');
+    this.briefingButton = PauseMenu.el('briefing-button');
 
     this.listen(this.pauseButton, handlers.onPause);
     this.listen(this.resumeButton, handlers.onResume);
     this.listen(this.restartButton, handlers.onRestart);
+    this.listen(this.briefingButton, handlers.onBriefing);
     this.hide();
   }
 

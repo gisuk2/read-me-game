@@ -40,6 +40,8 @@ export interface CombatBoss {
     phase: 'telegraph' | 'active' | 'recovery';
     pattern: { id: BossPatternId; damage: number };
     parryable: boolean;
+    /** 근접 판정이 있는가 (원거리 타는 false) */
+    melee: boolean;
     shape: AttackShape;
   } | null;
   applyHit(damage: number, postureMultiplier?: number): { died: boolean; staggerStarted: boolean; dealt: number };
@@ -102,7 +104,7 @@ export class CombatSystem {
    */
   private resolveBossAttack(player: CombatPlayer, boss: CombatBoss, events: CombatEvent[]): void {
     const atk = boss.attack;
-    if (!atk || atk.phase !== 'active' || boss.attackSerial === this.lastBossAttackResolved) return;
+    if (!atk || !atk.melee || atk.phase !== 'active' || boss.attackSerial === this.lastBossAttackResolved) return;
     if (!circleHitsShape(player.x, player.y, player.radius, atk.shape)) return;
 
     const id = atk.pattern.id;

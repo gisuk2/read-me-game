@@ -4,7 +4,7 @@ import { clamp } from '../../utils/math';
 import { degToRad, normalize, type Vec2 } from '../../utils/geometry';
 import type { AttackShape } from '../../utils/shapes';
 
-export type PlayerState = 'idle' | 'move' | 'dash' | 'attack' | 'parry' | 'potion' | 'hit' | 'dead';
+export type PlayerState = 'idle' | 'move' | 'dash' | 'attack' | 'parry' | 'hit' | 'dead';
 export type AttackPhase = 'startup' | 'active' | 'recovery';
 /** combo = 1·2·3타 / dash = 대시 찌르기 */
 export type AttackKind = 'combo' | 'dash';
@@ -17,8 +17,6 @@ export type PlayerEvent =
   | { type: 'dash'; dirX: number; dirY: number; cancelledAttack: boolean }
   | { type: 'attackStart'; kind: AttackKind; comboIndex: number; angle: number }
   | { type: 'parryStart' }
-  | { type: 'potionStart' }
-  | { type: 'potionHealed'; amount: number }
   | { type: 'staminaDenied'; action: 'dash' | 'attack' | 'parry' };
 
 export interface AttackInfo {
@@ -64,8 +62,7 @@ export interface Bounds {
  *                             ─(경직 후반부 + 대시)→ dash (후딜 캔슬)
  *                             ─(시간 끝)→ idle
  *             ─(패링)→ parry ─(시간 끝)→ idle
- *             ─(포션)→ potion ─(시간 끝, 회복)→ idle
- *   (어느 상태든) ─(피격)→ hit ─(경직 끝)→ idle   /   체력 0 → dead
+ *   (어느 상태든) ─(피격)→ dead (한 방 사망. oneHitKill이 false면 체력이 남는 동안 hit(경직) ─→ idle)
  *   dash ─(대시 중 클릭 or 대시 직후 inputWindowMs 안에 클릭)→ attack(대시 찌르기, 콤보로 안 이어짐)
  *   준비·판정 중에는 대시·패링으로 취소되지 않는다 (동작 고정).
  *   단, 1·2타는 공격 중에도 느리게 움직일 수 있다 (moveSpeedRatio). 3타는 제자리.
@@ -78,7 +75,6 @@ export class PlayerModel {
   facing = 0;
   hp: number;
   stamina: number;
-  potions: number;
 
   private _state: PlayerState = 'idle';
   private stateTimeMs = 0;
@@ -114,7 +110,6 @@ export class PlayerModel {
     this.y = y;
     this.hp = cfg.maxHp;
     this.stamina = cfg.maxStamina;
-    this.potions = cfg.potion.count;
   }
 
   get state(): PlayerState {
@@ -176,12 +171,6 @@ export class PlayerModel {
     return { phase: 'recovery', phaseProgress: Math.min(1, (this.stateTimeMs - activeMs) / recoveryMs) };
   }
 
-  /** 포션을 마시는 중이면 진행률 0~1, 아니면 null */
-  get potionProgress(): number | null {
-    if (this._state !== 'potion') return null;
-    return Math.min(1, this.stateTimeMs / this.cfg.potion.drinkMs);
-  }
-
   update(input: PlayerInput, dtMs: number): PlayerEvent[] {
     this.events = [];
     if (this._state === 'dead') return this.events;
@@ -207,9 +196,6 @@ export class PlayerModel {
       case 'parry':
         this.updateParry();
         break;
-      case 'potion':
-        this.updatePotion();
-        break;
     }
 
     this.regenStamina(dtMs);
@@ -218,7 +204,7 @@ export class PlayerModel {
 
   // ───────────────────────── 상태별 처리 ─────────────────────────
 
-  /** 자유 상태(idle/move): 행동 우선순위 = 대시 > 공격 > 패링 > 포션 > 이동 */
+  /** 자유 상태(idle/move): 행동 우선순위 = 대시 > 공격 > 패링 > 이동 */
   private updateFree(input: PlayerInput, dtMs: number): void {
     this.facing = input.aimAngle;
 
@@ -252,13 +238,6 @@ export class PlayerModel {
         return;
       }
       this.events.push({ type: 'staminaDenied', action: 'parry' });
-    }
-
-    if (input.potion && this.potions > 0) {
-      this.potions -= 1;
-      this.enter('potion');
-      this.events.push({ type: 'potionStart' });
-      return;
     }
 
     const dir = normalize(input.moveX, input.moveY);
@@ -385,25 +364,15 @@ export class PlayerModel {
     if (this.stateTimeMs >= activeMs + recoveryMs) this.enter('idle');
   }
 
-  private updatePotion(): void {
-    const { drinkMs, heal } = this.cfg.potion;
-    if (this.stateTimeMs >= drinkMs) {
-      const before = this.hp;
-      this.hp = Math.min(this.cfg.maxHp, this.hp + heal);
-      this.events.push({ type: 'potionHealed', amount: this.hp - before });
-      this.enter('idle');
-    }
-  }
-
   // ───────────────────────── 피격 ─────────────────────────
 
   /**
-   * 공격에 맞음 (CombatSystem이 호출). 하던 행동은 끊긴다 (마시던 포션은 소모된 채로 사라짐).
-   * 맞은 반대 방향으로 밀려나고, 경직 동안 아무것도 못 한다.
+   * 공격에 맞음 (CombatSystem이 호출). 하던 행동은 끊긴다.
+   * 한 방 사망: 바로 쓰러진다. (oneHitKill이 false면 피해만큼 체력이 줄고, 남아 있으면 경직 + 맞은 반대쪽으로 밀려남)
    */
   applyHit(damage: number, fromX: number, fromY: number): { died: boolean } {
     if (this._state === 'dead') return { died: false };
-    this.hp = Math.max(0, this.hp - damage);
+    this.hp = this.cfg.oneHitKill ? 0 : Math.max(0, this.hp - damage);
     if (this.hp === 0) {
       this.enter('dead');
       return { died: true };

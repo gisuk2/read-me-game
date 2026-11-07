@@ -34,7 +34,10 @@ export class BossHud {
       .setDepth(10);
   }
 
-  update(boss: BossModel): void {
+  /**
+   * @param checkpoint 체크포인트 방식이면 { stages: 칸 수, saved: 저장된 칸 수 }, 아니면 null
+   */
+  update(boss: BossModel, checkpoint: { stages: number; saved: number } | null): void {
     const g = this.g;
     g.clear();
 
@@ -46,6 +49,20 @@ export class BossHud {
     g.fillRect(this.x, this.hpY, BAR_W * hpRatio, HP_H);
     g.lineStyle(1.5, BLACK, 1);
     g.strokeRect(this.x, this.hpY, BAR_W, HP_H);
+
+    // 체크포인트: 칸 구분선 + 저장된 지점 표시 (▼)
+    if (checkpoint) {
+      for (let i = 1; i < checkpoint.stages; i++) {
+        const cx = this.x + (BAR_W * i) / checkpoint.stages;
+        g.lineStyle(1.5, i / checkpoint.stages < hpRatio ? WHITE : BLACK, 1);
+        g.lineBetween(cx, this.hpY, cx, this.hpY + HP_H);
+      }
+      if (checkpoint.saved > 0) {
+        const sx = this.x + BAR_W * (1 - checkpoint.saved / checkpoint.stages);
+        g.fillStyle(BLACK, 1);
+        g.fillTriangle(sx - 5, this.hpY + HP_H + 9, sx + 5, this.hpY + HP_H + 9, sx, this.hpY + HP_H + 2);
+      }
+    }
 
     // 자세 게이지 (가운데에서 양쪽으로)
     const postureRatio = Math.min(1, boss.posture / this.cfg.posture.max);

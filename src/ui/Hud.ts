@@ -7,20 +7,16 @@ const WHITE = 0xffffff;
 const STAMINA_COLOR = 0x888888;
 
 const X = 16;
-const HP_Y = 16;
-const HP_W = 240;
-const HP_H = 12;
-const ST_Y = 34;
-const ST_W = 200;
-const ST_H = 8;
-const POTION_Y = 50;
+const ST_Y = 16;
+const ST_W = 220;
+const ST_H = 10;
 
 /** 스태미나 부족으로 행동이 막혔을 때 스태미나 바가 깜빡이는 시간 */
 const DENIED_FLASH_MS = 400;
 
 /**
- * 화면 왼쪽 위 HUD: 체력 바, 스태미나 바, 포션 개수.
- * 소울라이크 관례대로 체력이 위, 스태미나가 아래.
+ * 화면 왼쪽 위 HUD: 스태미나 바.
+ * 한 방 사망이라 체력 바는 없다 (docs/design/learning-feedback.md §5.1).
  */
 export class Hud {
   private readonly g: Phaser.GameObjects.Graphics;
@@ -44,24 +40,10 @@ export class Hud {
     const g = this.g;
     g.clear();
 
-    // 체력
-    this.bar(HP_Y, HP_W, HP_H, p.hp / this.cfg.maxHp, BLACK, 1.5);
-
     // 스태미나 (부족 경고 시 테두리가 굵게 깜빡임)
     const blinkOn = this.flashMs > 0 && Math.floor(this.flashMs / 100) % 2 === 0;
     this.bar(ST_Y, ST_W, ST_H, p.stamina / this.cfg.maxStamina, STAMINA_COLOR, blinkOn ? 3 : 1);
 
-    // 포션: 남은 개수만큼 채운 병, 쓴 것은 테두리만
-    for (let i = 0; i < this.cfg.potion.count; i++) {
-      const bx = X + i * 12;
-      if (i < p.potions) {
-        g.fillStyle(BLACK, 1);
-        g.fillRoundedRect(bx, POTION_Y, 7, 11, 2);
-      } else {
-        g.lineStyle(1, BLACK, 0.5);
-        g.strokeRoundedRect(bx, POTION_Y, 7, 11, 2);
-      }
-    }
   }
 
   private bar(y: number, width: number, height: number, ratio: number, color: number, outline: number): void {

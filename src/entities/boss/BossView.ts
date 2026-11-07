@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import type { Vec2 } from '../../utils/geometry';
 import { dashPolyline, expandShape, shapeOutline } from '../../utils/shapes';
 import type { BossModel } from './BossModel';
+import type { WeaponId } from '../../config/bossBalance';
 
 const BLACK = 0x000000;
 const WHITE = 0xffffff;
@@ -23,8 +24,26 @@ const DASH = 10;
 const GAP = 7;
 /** 패링 불가 공격의 바깥쪽 두 번째 점선 간격 */
 const DOUBLE_LINE_OFFSET = 6;
-/** 무기 날 길이 */
+/** 무기 기준 길이 (자세 계산용. 실제 길이는 무기마다 다름) */
 const WEAPON_LEN = 58;
+
+interface WeaponPose {
+  /** 몸 중심 (높이 반영) */
+  cx: number;
+  cy: number;
+  /** 무기 방향 */
+  wa: number;
+  /** 손 위치 = 중심에서의 거리 */
+  hand: number;
+  /** 자세에 따른 길이 (WEAPON_LEN 기준 비율로 무기 길이에 반영) */
+  len: number;
+  color: number;
+  /** 패링 불가 공격 준비 중: 붉게 빛남 */
+  glow: boolean;
+  alpha: number;
+  /** 교체 글리치로 어긋나는 거리 */
+  jitter: number;
+}
 
 /**
  * 보스와 공격 범위를 그린다 (로직 없음).
@@ -132,7 +151,20 @@ export class BossView {
       glow = !atk.parryable && atk.phase === 'telegraph';
       const aim = atk.shape.kind === 'sector' || atk.shape.kind === 'rect' ? atk.shape.angle : m.facing;
 
-      if (p.shape === 'sector') {
+      const isDashStep = p.shape === 'sector' && atk.shape.kind === 'rect';
+      if (atk.fire === 'wave') {
+        // 지면 파동: 해머를 치켜들었다가(준비) 앞으로 내리침
+        if (atk.phase === 'telegraph') { wa = -Math.PI / 2 + (aim + Math.PI / 2) * 0.15 * e; hand = r * 0.6; }
+        else { wa = aim; len = WEAPON_LEN + 10; }
+      } else if (atk.fire === 'bullet') {
+        // 사격: 총을 조준 방향으로 들고, 쏠 때 살짝 반동
+        wa = aim;
+        if (atk.phase === 'active') hand = r * 0.75 - 8;
+      } else if (isDashStep) {
+        // 쌍검 마무리 돌진: 두 날을 앞으로 모아 당겼다가 몸째 돌파
+        wa = aim;
+        if (atk.phase === 'telegraph') hand = r * 0.75 - 20 * e;
+      } else if (p.shape === 'sector') {
         const side = atk.step % 2 === 0 ? 1 : -1;
         const half = (p.arcDeg * Math.PI) / 360;
         const back = half + 0.5;
@@ -154,17 +186,110 @@ export class BossView {
       }
     }
 
-    const hx = cx + Math.cos(wa) * hand;
-    const hy = cy + Math.sin(wa) * hand;
-    const tx = hx + Math.cos(wa) * len;
-    const ty = hy + Math.sin(wa) * len;
-    const g = this.body;
-    if (glow) {
-      g.lineStyle(14, RED, 0.25);
-      g.lineBetween(hx, hy, tx, ty);
+    const color = glow ? RED : m.isStaggered ? REST_GREY : BLACK;
+    const pose: WeaponPose = { cx, cy, wa, hand, len, color, glow, alpha: 1, jitter: 0 };
+
+    // 무기 교체: 앞 절반은 이전 무기가 깜빡이며 사라지고, 뒤 절반은 새 무기가 어긋나며 나타남 (글리치)
+    const swap = m.weaponSwap;
+    if (swap) {
+      const t = swap.progress;
+      const flicker = Math.floor(t * 20) % 2 === 0 ? 1 : 0.35;
+      if (t < 0.5) this.drawWeaponShape(swap.from, { ...pose, alpha: (1 - t * 2) * flicker, jitter: 6 * t });
+      else this.drawWeaponShape(swap.to, { ...pose, alpha: (t * 2 - 1) * flicker, jitter: 6 * (1 - t) });
+      return;
     }
-    g.lineStyle(6, glow ? RED : m.isStaggered ? REST_GREY : BLACK, 1);
-    g.lineBetween(hx, hy, tx, ty);
+    // 쌍검은 반대쪽 손에도 한 자루 (조준 축에 대칭)
+    if (m.weapon === 'twinblades') {
+      const axis = atk && (atk.shape.kind === 'sector' || atk.shape.kind === 'rect') ? atk.shape.angle : m.facing;
+      this.drawWeaponShape('twinblades', { ...pose, wa: 2 * axis - wa, alpha: atk?.phase === 'active' ? 0.6 : 1 });
+    }
+    this.drawWeaponShape(m.weapon, pose);
+  }
+
+  /**
+   * 무기 실루엣 (멀리서도 구분되도록 모양을 크게 다르게)
+   *  - 대검: 굵고 긴 날 + 가로 손잡이
+   *  - 창: 가늘고 아주 긴 자루 + 삼각형 날
+   *  - 해머: 자루 + 끝에 큰 사각 머리
+   *  - 쌍검: 짧은 날 (양손)
+   *  - 총: 짧은 몸통 + 가는 총열
+   *  - 맨손: 양쪽 주먹
+   */
+  private drawWeaponShape(id: WeaponId, p: WeaponPose): void {
+    if (p.alpha <= 0) return;
+    const g = this.body;
+    const cos = Math.cos(p.wa);
+    const sin = Math.sin(p.wa);
+    // 글리치: 날 방향의 수직으로 살짝 어긋남
+    const jx = -sin * p.jitter;
+    const jy = cos * p.jitter;
+    const at = (d: number, side = 0) => ({
+      x: p.cx + jx + cos * (p.hand + d) - sin * side,
+      y: p.cy + jy + sin * (p.hand + d) + cos * side,
+    });
+    const line = (a: Vec2, b: Vec2, width: number) => {
+      if (p.glow) {
+        g.lineStyle(width + 8, RED, 0.25 * p.alpha);
+        g.lineBetween(a.x, a.y, b.x, b.y);
+      }
+      g.lineStyle(width, p.color, p.alpha);
+      g.lineBetween(a.x, a.y, b.x, b.y);
+    };
+    const fill = (pts: Vec2[]) => {
+      g.fillStyle(p.color, p.alpha);
+      tracePolygon(g, pts);
+      g.fillPath();
+    };
+    const scale = p.len / WEAPON_LEN; // 찌르기처럼 길게 뻗는 동작은 길이 비율로 반영
+
+    switch (id) {
+      case 'greatsword': {
+        const L = 66 * scale;
+        line(at(0), at(L), 8);
+        line(at(6, -9), at(6, 9), 4); // 손잡이 가드
+        break;
+      }
+      case 'spear': {
+        const L = 92 * scale;
+        line(at(-10), at(L), 3);
+        fill([at(L - 2, -7), at(L + 16), at(L - 2, 7)]);
+        break;
+      }
+      case 'hammer': {
+        const L = 52 * scale;
+        line(at(0), at(L), 4);
+        fill([at(L - 6, -14), at(L + 12, -14), at(L + 12, 14), at(L - 6, 14)]);
+        break;
+      }
+      case 'twinblades': {
+        const L = 40 * scale;
+        line(at(0), at(L), 5);
+        line(at(3, -5), at(3, 5), 3);
+        break;
+      }
+      case 'gun': {
+        // 짧은 몸통 + 가는 총열 + 손잡이
+        fill([at(-4, -7), at(18, -7), at(18, 7), at(-4, 7)]);
+        line(at(18), at(46), 4);
+        line(at(2, 7), at(-2, 16), 5);
+        break;
+      }
+      case 'bare': {
+        // 맨손: 양쪽 주먹 (무기 방향 축으로 좌우에)
+        const fist = (side: number) => {
+          const c = at(8, side);
+          g.fillStyle(p.color, p.alpha);
+          g.fillCircle(c.x, c.y, 8);
+          if (p.glow) {
+            g.lineStyle(6, RED, 0.25 * p.alpha);
+            g.strokeCircle(c.x, c.y, 10);
+          }
+        };
+        fist(-14);
+        fist(14);
+        break;
+      }
+    }
   }
 
   // ───────────────────────── 보스 ─────────────────────────

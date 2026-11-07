@@ -1,10 +1,10 @@
-import { BOSS, isParryable, type AttackStep, type BossConfig, type BossPatternConfig, type BossPatternId } from '../../config/bossBalance';
+import { BOSS, isParryable, type AttackStep, type BossConfig, type BossPatternConfig, type BossPatternId, type WeaponId } from '../../config/bossBalance';
 import { clamp } from '../../utils/math';
 import { degToRad, type Vec2 } from '../../utils/geometry';
 import { wrapAngle, type AttackShape } from '../../utils/shapes';
 import type { Bounds } from '../player/PlayerModel';
 
-export type BossState = 'watch' | 'approach' | 'telegraph' | 'active' | 'recovery' | 'rest' | 'flinch' | 'staggered' | 'dead';
+export type BossState = 'watch' | 'approach' | 'swap' | 'telegraph' | 'active' | 'recovery' | 'rest' | 'flinch' | 'staggered' | 'dead';
 /** 관찰 중 행동: 노려보기 / 왼쪽으로 돌기 / 오른쪽으로 돌기 */
 export type WatchMode = 'stare' | 'strafeLeft' | 'strafeRight';
 export type BossAttackPhase = 'telegraph' | 'active' | 'recovery';
@@ -17,6 +17,20 @@ export type BossEvent =
   | { type: 'comboCancelled'; patternId: BossPatternId; afterHits: number; next: BossPatternId | null }
   | { type: 'attackEnd'; patternId: BossPatternId }
   | { type: 'restStart' }
+  | { type: 'weaponSwap'; from: WeaponId; to: WeaponId }
+  /** 원거리 타 발사: 받는 쪽(ProjectileSystem)이 날아가는 물체를 만든다 */
+  | {
+      type: 'fire';
+      patternId: BossPatternId;
+      x: number;
+      y: number;
+      angle: number;
+      kind: 'bullet' | 'wave';
+      speed: number;
+      radius: number;
+      damage: number;
+      parryable: boolean;
+    }
   | { type: 'watchStart'; mode: WatchMode; durationMs: number };
 
 export interface BossAttackInfo {
@@ -28,6 +42,10 @@ export interface BossAttackInfo {
   parryable: boolean;
   /** 조준이 고정되었는가 (고정 전에는 예고 범위가 플레이어를 따라온다) */
   locked: boolean;
+  /** 근접 판정이 있는가 (원거리 타는 false: 판정은 날아가는 물체가 함) */
+  melee: boolean;
+  /** 원거리 타면 무엇을 쏘는가 */
+  fire: 'bullet' | 'wave' | null;
   phase: BossAttackPhase;
   /** 현재 단계 안에서의 진행률 0~1 */
   phaseProgress: number;
@@ -75,6 +93,7 @@ const easeInOut = (t: number): number => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 
  * 보스의 순수 로직 (Phaser에 의존하지 않음).
  *
  * 상태 전이:
+ *   approach ─(고른 패턴의 무기가 다름)→ swap(무기 교체) ─→ approach
  *   approach ─(사거리 안 + minIdleMs 지남)→ telegraph ─→ active ─→ recovery ─┬────────────→ watch ─→ approach
  *                                                                          └(restMs > 0)→ rest ─┘
  *   watch(관찰): 공격 후 바로 다가가지 않고 노려보거나 옆으로 돌며 거리를 잰다. 너무 가까우면 물러난다.
@@ -104,6 +123,8 @@ export class BossModel {
   hitFlashMs = 0;
   private msSinceHurt = Number.POSITIVE_INFINITY;
   private _attackSerial = 0;
+  private _weapon: WeaponId;
+  private swapTo: WeaponId | null = null;
 
   private _state: BossState = 'approach';
   private stateTimeMs = 0;
@@ -135,6 +156,18 @@ export class BossModel {
     this.x = x;
     this.y = y;
     this.hp = cfg.maxHp;
+    this._weapon = cfg.startWeapon;
+  }
+
+  /** 지금 들고 있는 무기 (교체 중이면 아직 이전 무기) */
+  get weapon(): WeaponId {
+    return this._weapon;
+  }
+
+  /** 무기 교체 중이면 정보, 아니면 null */
+  get weaponSwap(): { from: WeaponId; to: WeaponId; progress: number } | null {
+    if (this._state !== 'swap' || !this.swapTo) return null;
+    return { from: this._weapon, to: this.swapTo, progress: Math.min(1, this.stateTimeMs / this.cfg.weaponSwapMs) };
   }
 
   get state(): BossState {
@@ -239,8 +272,10 @@ export class BossModel {
       pattern: p,
       step: this.stepIndex,
       stepCount: p.steps.length,
-      parryable: isParryable(p),
+      parryable: isParryable(p, s),
       locked: this.locked,
+      melee: !s.fire,
+      fire: s.fire?.kind ?? null,
       phase: this._state,
       phaseProgress: Math.min(1, this.stateTimeMs / duration),
       shape: this.shapeOf(p),
@@ -271,6 +306,14 @@ export class BossModel {
       case 'approach':
         this.updateApproach(target, dtMs);
         break;
+      case 'swap':
+        this.turnToward(target, dtMs);
+        if (this.stateTimeMs >= this.cfg.weaponSwapMs) {
+          this._weapon = this.swapTo!;
+          this.swapTo = null;
+          this.enter('approach');
+        }
+        break;
       case 'telegraph':
         this.updateTelegraph(target, dtMs);
         break;
@@ -299,8 +342,16 @@ export class BossModel {
       if (this.stateTimeMs >= this.cfg.chaseTimeoutMs) this.stateTimeMs = this.cfg.minIdleMs;
     }
 
+    // 다른 무기가 필요하면 먼저 바꿔 든다
+    if (this.pattern.weapon !== this._weapon) {
+      this.swapTo = this.pattern.weapon;
+      this.enter('swap');
+      this.events.push({ type: 'weaponSwap', from: this._weapon, to: this.swapTo });
+      return;
+    }
+
     if (dist > this.pattern.maxDistance) {
-      const step = this.cfg.moveSpeed * (dtMs / 1000);
+      const step = this.cfg.weaponMoveSpeed[this._weapon] * (dtMs / 1000);
       this.setPosition(this.x + ((target.x - this.x) / dist) * step, this.y + ((target.y - this.y) / dist) * step);
       return;
     }
@@ -355,10 +406,27 @@ export class BossModel {
     }
 
     if (p.shape === 'circle' && p.anchor === 'target') {
-      const e = easeInOut(t);
-      this.x = this.origin.x + (this.landing.x - this.origin.x) * e;
-      this.y = this.origin.y + (this.landing.y - this.origin.y) * e;
-      this.z = (p.jumpHeight ?? 0) * 4 * t * (1 - t);
+      const h = p.jumpHeight ?? 0;
+      if (p.hang) {
+        // 지연 내려찍기: 올라가며 착지 지점 위로 이동 → 공중에서 멈칫(착지 지점을 따라다님) → 떨어짐
+        const { from, to } = p.hang;
+        if (t < from) {
+          const e = easeInOut(t / from);
+          this.x = this.origin.x + (this.landing.x - this.origin.x) * e;
+          this.y = this.origin.y + (this.landing.y - this.origin.y) * e;
+          this.z = h * Math.sin((t / from) * (Math.PI / 2));
+        } else {
+          this.x = this.landing.x;
+          this.y = this.landing.y;
+          const k = t < to ? 0 : (t - to) / (1 - to);
+          this.z = h * (1 - k * k);
+        }
+      } else {
+        const e = easeInOut(t);
+        this.x = this.origin.x + (this.landing.x - this.origin.x) * e;
+        this.y = this.origin.y + (this.landing.y - this.origin.y) * e;
+        this.z = h * 4 * t * (1 - t);
+      }
     }
 
     if (this.stateTimeMs >= s.telegraphMs) {
@@ -367,6 +435,21 @@ export class BossModel {
       this.lungeFrom = { x: this.x, y: this.y };
       this.enter('active');
       this.events.push({ type: 'attackActive', patternId: p.id, step: this.stepIndex });
+      if (s.fire) {
+        // 몸 앞에서 발사
+        this.events.push({
+          type: 'fire',
+          patternId: p.id,
+          x: this.x + Math.cos(this.aimAngle) * this.cfg.radius,
+          y: this.y + Math.sin(this.aimAngle) * this.cfg.radius,
+          angle: this.aimAngle,
+          kind: s.fire.kind,
+          speed: s.fire.speed,
+          radius: s.fire.radius,
+          damage: p.damage,
+          parryable: isParryable(p, s),
+        });
+      }
     }
   }
 
@@ -431,6 +514,7 @@ export class BossModel {
   /** 관찰: 플레이어를 바라보며 노려보거나 옆으로 돈다. 너무 가까우면 물러난다. */
   private updateWatch(target: Vec2, dtMs: number): void {
     const w = this.cfg.watch;
+    const k = this.speedScale;
     this.turnToward(target, dtMs);
     const dx = target.x - this.x;
     const dy = target.y - this.y;
@@ -441,11 +525,11 @@ export class BossModel {
       const uy = dy / dist;
       const sec = dtMs / 1000;
       if (dist < w.retreatDistance) {
-        this.setPosition(this.x - ux * w.retreatSpeed * sec, this.y - uy * w.retreatSpeed * sec);
+        this.setPosition(this.x - ux * w.retreatSpeed * k * sec, this.y - uy * w.retreatSpeed * k * sec);
       } else if (this.watchMode !== 'stare') {
         // 플레이어를 중심으로 접선 방향 (왼쪽: 반시계, 오른쪽: 시계)
         const sign = this.watchMode === 'strafeLeft' ? -1 : 1;
-        this.setPosition(this.x - uy * sign * w.strafeSpeed * sec, this.y + ux * sign * w.strafeSpeed * sec);
+        this.setPosition(this.x - uy * sign * w.strafeSpeed * k * sec, this.y + ux * sign * w.strafeSpeed * k * sec);
       }
     }
 
@@ -473,12 +557,29 @@ export class BossModel {
   private cancelAttack(): void {
     if (this.pattern) this.lastPatternId = this.pattern.id;
     this.pattern = null;
+    this.swapTo = null; // 교체 중이었다면 이전 무기를 그대로 든다
     this.z = 0;
   }
 
   // ───────────────────────── 보조 ─────────────────────────
 
+  /** 무기에 따른 이동 속도 배율 (기준 moveSpeed 대비) */
+  private get speedScale(): number {
+    return this.cfg.weaponMoveSpeed[this._weapon] / this.cfg.moveSpeed;
+  }
+
   private shapeOf(p: BossPatternConfig): AttackShape {
+    const fire = this.step.fire;
+    if (fire) {
+      // 원거리 타의 예고 = 조준선 (발사 방향으로 경기장 끝까지)
+      const reach = Math.hypot(this.bounds.width, this.bounds.height);
+      return { kind: 'rect', x: this.x, y: this.y, angle: this.aimAngle, length: reach, width: Math.max(6, fire.radius * 2) };
+    }
+    const override = this.step.shape;
+    if (override?.kind === 'dashRect') {
+      // 예고를 시작한 자리에서 뻗는 직사각형 (돌진하며 지나가는 길 전체)
+      return { kind: 'rect', x: this.origin.x, y: this.origin.y, angle: this.aimAngle, length: override.length, width: override.width };
+    }
     switch (p.shape) {
       case 'sector':
         return { kind: 'sector', cx: this.strikeOrigin.x, cy: this.strikeOrigin.y, radius: p.radius, angle: this.aimAngle, arcRad: degToRad(p.arcDeg) };

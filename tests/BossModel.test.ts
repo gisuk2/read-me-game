@@ -110,8 +110,9 @@ describe('보스 상태 머신', () => {
 
   it('점프 내려찍기: 착지 지점이 고정 전까지 따라오고, 고정 뒤 도망가도 그 지점에 착지한 뒤 숨을 고른다', () => {
     const boss = new BossModel(200, 200, BOUNDS, BOSS, () => 0.99); // 멀리서 → 마지막 후보(점프 내려찍기)
-    run(boss, { x: 700, y: 600 }, BOSS.minIdleMs + STEP_MS);
+    runUntil(boss, { x: 700, y: 600 }, () => boss.attack !== null); // 해머로 바꿔 든 뒤 예고 시작
     expect(boss.attack?.pattern.id).toBe('slam');
+    expect(boss.weapon).toBe('hammer');
     const slam = only('slam');
 
     run(boss, { x: 650, y: 650 }, slam.telegraphMs * slam.trackRatio); // 추적 구간에 조금 이동 → 따라옴, 그리고 고정
@@ -158,7 +159,7 @@ describe('관찰 (공격 후 멈추는 시간)', () => {
     expect(during.some((e) => e.type === 'telegraphStart')).toBe(false);
 
     run(boss, target, STEP_MS * 3);
-    expect(boss.state).toBe('approach');
+    expect(boss.state === 'approach' || boss.state === 'swap').toBe(true); // 다음 공격 무기가 다르면 바꿔 드는 중
   });
 
   it('관찰 시간은 설정한 최소~최대 범위 안이다', () => {
@@ -380,5 +381,159 @@ describe('자세 게이지 배율', () => {
     boss.applyHit(10, 2);
     expect(boss.hp).toBe(BOSS.maxHp - 10);
     expect(boss.posture).toBeCloseTo(10 * BOSS.posture.perDamage * 2, 10);
+  });
+});
+
+describe('무기', () => {
+  it('처음에는 시작 무기를 들고 있다', () => {
+    expect(new BossModel(500, 500, BOUNDS, BOSS, () => 0).weapon).toBe(BOSS.startWeapon);
+  });
+
+  it('고른 패턴의 무기가 다르면 정해진 시간 동안 바꿔 든 뒤 공격한다 (그동안은 공격 없음)', () => {
+    const boss = new BossModel(500, 500, BOUNDS, only1('thrust'), () => 0); // 찌르기 = 창
+    const target = { x: 600, y: 500 };
+    const events = run(boss, target, STEP_MS);
+    expect(boss.state).toBe('swap');
+    expect(events.some((e) => e.type === 'weaponSwap' && e.from === BOSS.startWeapon && e.to === 'spear')).toBe(true);
+
+    run(boss, target, BOSS.weaponSwapMs - STEP_MS * 2);
+    expect(boss.state).toBe('swap');
+    expect(boss.attack).toBeNull();
+    expect(boss.weapon).toBe(BOSS.startWeapon); // 교체가 끝나기 전엔 이전 무기
+
+    run(boss, target, STEP_MS * 2);
+    expect(boss.weapon).toBe('spear');
+    runUntil(boss, target, () => boss.attack !== null);
+    expect(boss.attack!.pattern.id).toBe('thrust');
+  });
+
+  it('같은 무기를 쓰는 패턴이면 바꾸지 않는다', () => {
+    const boss = new BossModel(500, 500, BOUNDS, only1('sweep'), () => 0); // 휘두르기 = 대검 (시작 무기)
+    const events = runUntil(boss, { x: 560, y: 500 }, () => boss.attack !== null);
+    expect(events.some((e) => e.type === 'weaponSwap')).toBe(false);
+  });
+
+  it('교체 중에 자세가 무너지면 교체가 취소되고 이전 무기를 그대로 든다', () => {
+    const boss = new BossModel(500, 500, BOUNDS, only1('thrust'), () => 0);
+    run(boss, { x: 600, y: 500 }, STEP_MS * 5);
+    expect(boss.state).toBe('swap');
+    boss.posture = BOSS.posture.max - 1;
+    boss.applyHit(10);
+    expect(boss.isStaggered).toBe(true);
+    expect(boss.weapon).toBe(BOSS.startWeapon);
+    expect(boss.weaponSwap).toBeNull();
+  });
+
+  it('모든 패턴에 무기가 정해져 있고, 연속 베기는 쌍검 4번 베기 + 마무리 돌진이다', () => {
+    for (const p of BOSS.patterns) expect(typeof p.weapon).toBe('string');
+    const combo = pattern('combo');
+    expect(combo.weapon).toBe('twinblades');
+    expect(combo.steps.length).toBe(5);
+    expect(combo.steps[4].shape?.kind).toBe('dashRect');
+  });
+
+  it('무기마다 이동 속도가 다르다: 쌍검이 대검보다 빨리 다가간다', () => {
+    const cfg = (w: 'twinblades' | 'greatsword') => ({ ...BOSS, startWeapon: w, patterns: [{ ...pattern('sweep'), weapon: w }] });
+    const fast = new BossModel(200, 500, BOUNDS, cfg('twinblades'), () => 0);
+    const slow = new BossModel(200, 500, BOUNDS, cfg('greatsword'), () => 0);
+    run(fast, { x: 900, y: 500 }, 500);
+    run(slow, { x: 900, y: 500 }, 500);
+    expect(fast.x - 200).toBeCloseTo((BOSS.weaponMoveSpeed.twinblades * 500) / 1000, 0);
+    expect(slow.x - 200).toBeCloseTo((BOSS.weaponMoveSpeed.greatsword * 500) / 1000, 0);
+  });
+});
+
+describe('쌍검 마무리 돌진', () => {
+  const combo = pattern('combo');
+  const last = combo.steps.length - 1;
+
+  it('베기 4번은 패링 가능, 마무리 돌진은 패링 불가', () => {
+    const boss = new BossModel(500, 500, BOUNDS, only1('combo'), () => 0);
+    const target = { x: 560, y: 500 };
+    const parryable: boolean[] = [];
+    for (let t = 0; t < 20000 && boss.state !== 'watch'; t += STEP_MS) {
+      boss.update(target, STEP_MS);
+      const a = boss.attack;
+      if (a && a.phase === 'telegraph' && parryable.length === a.step) parryable.push(a.parryable);
+    }
+    expect(parryable).toEqual([true, true, true, true, false]);
+  });
+
+  it('예고를 시작한 자리에서 뻗는 직사각형이고, 판정 동안 그 길을 따라 빠르게 돌진한다', () => {
+    const boss = new BossModel(300, 500, BOUNDS, only1('combo'), () => 0);
+    // 오른쪽 멀리: 베기 4번의 돌진(30×4)으로도 지나치지 않는 거리 (지나치면 보스가 돌아서서 반대로 돌진함)
+    const target = { x: 700, y: 500 };
+    runUntil(boss, target, () => boss.attack?.phase === 'telegraph' && boss.attack.step === last);
+    const startX = boss.x;
+    const shape = boss.attack!.shape;
+    expect(shape.kind).toBe('rect');
+    expect(shape.kind === 'rect' && shape.x).toBeCloseTo(startX, 5);
+    expect(shape.kind === 'rect' && shape.length).toBe(combo.steps[last].shape!.length);
+
+    runUntil(boss, target, () => boss.attack?.phase === 'recovery' && boss.attack.step === last);
+    expect(boss.x - startX).toBeCloseTo(combo.steps[last].lungeDistance, 0);
+  });
+});
+
+describe('창 3연속 찌르기', () => {
+  it('세 번 찌르고(모두 패링 가능), 세 번째는 두 번째보다 늦게 온다', () => {
+    const thrust = pattern('thrust');
+    expect(thrust.weapon).toBe('spear');
+    expect(thrust.steps.length).toBe(3);
+    expect(thrust.steps.every((s) => s.category === undefined)).toBe(true);
+    expect(thrust.category).toBe('normal');
+    expect(thrust.steps[2].telegraphMs).toBeGreaterThan(thrust.steps[1].telegraphMs);
+  });
+});
+
+describe('무기 2부: 원거리 타·지연 내려찍기·새 무기', () => {
+  it('사격: 판정 순간 탄을 쏘고(fire 이벤트), 근접 판정은 없다', () => {
+    const boss = new BossModel(200, 300, BOUNDS, only1('shot'), () => 0);
+    const target = { x: 700, y: 300 };
+    const events = runUntil(boss, target, () => boss.attack?.phase === 'active');
+    expect(boss.attack!.melee).toBe(false);
+    expect(boss.attack!.fire).toBe('bullet');
+    const fire = events.find((e) => e.type === 'fire');
+    expect(fire && fire.type === 'fire' && fire.parryable).toBe(true);
+    expect(fire && fire.type === 'fire' && Math.abs(fire.angle)).toBeLessThan(0.05); // 오른쪽(플레이어 쪽)으로
+  });
+
+  it('지면 파동은 패링 불가 충격파를 쏜다', () => {
+    const boss = new BossModel(200, 300, BOUNDS, only1('wave'), () => 0);
+    const events = runUntil(boss, { x: 700, y: 300 }, () => boss.attack?.phase === 'active');
+    const fire = events.find((e) => e.type === 'fire');
+    expect(fire && fire.type === 'fire' && fire.kind).toBe('wave');
+    expect(fire && fire.type === 'fire' && fire.parryable).toBe(false);
+  });
+
+  it('지연 내려찍기: 공중에서 멈칫하는 동안 높이가 유지되고 착지 지점을 따라다닌다', () => {
+    const p = pattern('delayedSlam');
+    if (p.shape !== 'circle' || !p.hang) throw new Error('지연 내려찍기 설정이 원형+멈칫이어야 함');
+    const boss = new BossModel(200, 300, BOUNDS, only1('delayedSlam'), () => 0);
+    runUntil(boss, { x: 700, y: 300 }, () => boss.attack !== null);
+    const T = p.steps[0].telegraphMs;
+    run(boss, { x: 700, y: 300 }, T * (p.hang.from + 0.05));
+    const z1 = boss.z;
+    run(boss, { x: 600, y: 350 }, T * 0.2); // 멈칫 중 이동 → 따라옴 (아직 고정 전)
+    expect(boss.z).toBeCloseTo(z1, 5);
+    expect(z1).toBeCloseTo(p.jumpHeight!, 0);
+    expect(boss.x).toBeCloseTo(600, 0);
+    runUntil(boss, { x: 600, y: 350 }, () => boss.state === 'active');
+    expect(boss.z).toBe(0);
+  });
+
+  it('새 패턴: 잡기·몸통 돌진은 맨손(패링 불가), 추격 베기는 대검 3타(패링 가능)', () => {
+    expect(pattern('grab').weapon).toBe('bare');
+    expect(pattern('charge').weapon).toBe('bare');
+    expect(pattern('grab').category).toBe('heavy');
+    expect(pattern('charge').category).toBe('heavy');
+    expect(pattern('pursuit').weapon).toBe('greatsword');
+    expect(pattern('pursuit').steps.length).toBe(3);
+    expect(pattern('pursuit').category).toBe('normal');
+  });
+
+  it('카테고리 수: 일반 5, 강 6', () => {
+    expect(BOSS.patterns.filter((p) => p.category === 'normal').length).toBe(5);
+    expect(BOSS.patterns.filter((p) => p.category === 'heavy').length).toBe(6);
   });
 });
