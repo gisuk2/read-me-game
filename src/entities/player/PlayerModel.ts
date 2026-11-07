@@ -2,9 +2,12 @@ import { PLAYER, type AttackHitConfig, type PlayerConfig } from '../../config/ba
 import type { PlayerInput } from '../../input/types';
 import { clamp } from '../../utils/math';
 import { degToRad, normalize, type Vec2 } from '../../utils/geometry';
+import type { AttackShape } from '../../utils/shapes';
 
 export type PlayerState = 'idle' | 'move' | 'dash' | 'attack' | 'parry' | 'potion' | 'hit' | 'dead';
 export type AttackPhase = 'startup' | 'active' | 'recovery';
+/** combo = 1·2·3타 / dash = 대시 찌르기 */
+export type AttackKind = 'combo' | 'dash';
 
 /**
  * 플레이어가 한 일을 알리는 이벤트.
@@ -12,7 +15,7 @@ export type AttackPhase = 'startup' | 'active' | 'recovery';
  */
 export type PlayerEvent =
   | { type: 'dash'; dirX: number; dirY: number; cancelledAttack: boolean }
-  | { type: 'attackStart'; comboIndex: number; angle: number }
+  | { type: 'attackStart'; kind: AttackKind; comboIndex: number; angle: number }
   | { type: 'parryStart' }
   | { type: 'potionStart' }
   | { type: 'potionHealed'; amount: number }
@@ -21,6 +24,8 @@ export type PlayerEvent =
 export interface AttackInfo {
   /** 휘두를 때마다 1씩 늘어나는 번호. 한 번 휘두르면 한 번만 맞도록 판정에서 쓴다 */
   serial: number;
+  kind: AttackKind;
+  /** 콤보 몇 번째 타 (0부터). 대시 찌르기는 0 */
   comboIndex: number;
   phase: AttackPhase;
   /** 현재 단계 안에서의 진행률 0~1 (모션 그리기용) */
@@ -29,6 +34,10 @@ export interface AttackInfo {
   range: number;
   arcRad: number;
   damage: number;
+  /** 보스 자세 게이지 배율 */
+  postureMultiplier: number;
+  /** 실제 판정 범위 (판정과 그리기에 같이 쓴다) */
+  shape: AttackShape;
   /** 지금 대시로 캔슬할 수 있는가 (경직 후반부) */
   canDashCancel: boolean;
 }
@@ -57,8 +66,10 @@ export interface Bounds {
  *             ─(패링)→ parry ─(시간 끝)→ idle
  *             ─(포션)→ potion ─(시간 끝, 회복)→ idle
  *   (어느 상태든) ─(피격)→ hit ─(경직 끝)→ idle   /   체력 0 → dead
+ *   dash ─(대시 중 클릭 or 대시 직후 inputWindowMs 안에 클릭)→ attack(대시 찌르기, 콤보로 안 이어짐)
  *   준비·판정 중에는 대시·패링으로 취소되지 않는다 (동작 고정).
  *   단, 1·2타는 공격 중에도 느리게 움직일 수 있다 (moveSpeedRatio). 3타는 제자리.
+ *   3타(한 바퀴 베기)는 경직 중 대시 캔슬도 안 된다 (하이리스크 하이리턴).
  */
 export class PlayerModel {
   x: number;
@@ -77,7 +88,14 @@ export class PlayerModel {
   private dashDir: Vec2 = { x: 1, y: 0 };
 
   private comboIndex = 0;
+  private isDashAttack = false;
   private attackSerial = 0;
+  /** 공격 시작 위치 (돌진 계산용) */
+  private attackStart: Vec2 = { x: 0, y: 0 };
+  /** 대시가 끝난 뒤 지난 시간 (대시 찌르기 입력 창) */
+  private msSinceDashEnd = Number.POSITIVE_INFINITY;
+  /** 대시 중에 클릭해 두었는가 */
+  private dashAttackBuffered = false;
   private attackAngle = 0;
   private hitStart: Vec2 = { x: 0, y: 0 };
   private hitDir: Vec2 = { x: 0, y: 0 };
@@ -130,8 +148,13 @@ export class PlayerModel {
     if (this._state !== 'attack') return null;
     const hit = this.currentHit();
     const phase = this.attackPhase(hit);
+    const shape: AttackShape =
+      hit.shape === 'rect'
+        ? { kind: 'rect', x: this.x, y: this.y, angle: this.attackAngle, length: hit.range, width: hit.width ?? 20 }
+        : { kind: 'sector', cx: this.x, cy: this.y, radius: hit.range, angle: this.attackAngle, arcRad: degToRad(hit.arcDeg) };
     return {
       serial: this.attackSerial,
+      kind: this.isDashAttack ? 'dash' : 'combo',
       comboIndex: this.comboIndex,
       phase,
       phaseProgress: this.attackPhaseProgress(hit, phase),
@@ -139,6 +162,8 @@ export class PlayerModel {
       range: hit.range,
       arcRad: degToRad(hit.arcDeg),
       damage: hit.damage,
+      postureMultiplier: hit.postureMultiplier ?? 1,
+      shape,
       canDashCancel: this.canDashCancel(hit, phase),
     };
   }
@@ -163,6 +188,7 @@ export class PlayerModel {
 
     this.stateTimeMs += dtMs;
     this.msSinceStaminaSpent += dtMs;
+    if (this._state !== 'dash') this.msSinceDashEnd += dtMs;
 
     switch (this._state) {
       case 'idle':
@@ -170,7 +196,7 @@ export class PlayerModel {
         this.updateFree(input, dtMs);
         break;
       case 'dash':
-        this.updateDash();
+        this.updateDash(input);
         break;
       case 'attack':
         this.updateAttack(input, dtMs);
@@ -202,6 +228,11 @@ export class PlayerModel {
         return;
       }
       this.events.push({ type: 'staminaDenied', action: 'dash' });
+    }
+
+    // 대시 직후 클릭 → 대시 찌르기
+    if (input.attack && this.msSinceDashEnd <= this.cfg.dashAttack.inputWindowMs) {
+      if (this.tryStartDashAttack()) return;
     }
 
     // 클릭(눌린 순간) 또는 누르고 있음 → 공격 시작
@@ -244,28 +275,53 @@ export class PlayerModel {
         ? moveDir
         : { x: Math.cos(input.aimAngle), y: Math.sin(input.aimAngle) };
     this.dashStart = { x: this.x, y: this.y };
+    this.dashAttackBuffered = false;
     this.enter('dash');
     this.events.push({ type: 'dash', dirX: this.dashDir.x, dirY: this.dashDir.y, cancelledAttack });
   }
 
   /** 경과 시간 비율로 위치를 계산 → 프레임 속도와 무관하게 정확히 distance만큼 이동 */
-  private updateDash(): void {
+  private updateDash(input: PlayerInput): void {
+    if (input.attack) {
+      this.dashAttackBuffered = true;
+      this.facing = input.aimAngle;
+    }
     const { distance, durationMs } = this.cfg.dash;
     const progress = Math.min(this.stateTimeMs, durationMs) / durationMs;
     this.setPosition(
       this.dashStart.x + this.dashDir.x * distance * progress,
       this.dashStart.y + this.dashDir.y * distance * progress,
     );
-    if (this.stateTimeMs >= durationMs) this.enter('idle');
+    if (this.stateTimeMs >= durationMs) {
+      this.enter('idle');
+      this.msSinceDashEnd = 0;
+      if (this.dashAttackBuffered) {
+        this.dashAttackBuffered = false;
+        this.tryStartDashAttack();
+      }
+    }
   }
 
-  private startAttack(comboIndex: number): void {
+  /** 대시 찌르기 시작 (스태미나가 모자라면 false) */
+  private tryStartDashAttack(): boolean {
+    if (!this.trySpend(this.cfg.dashAttack.hit.staminaCost)) {
+      this.events.push({ type: 'staminaDenied', action: 'attack' });
+      return false;
+    }
+    this.msSinceDashEnd = Number.POSITIVE_INFINITY;
+    this.startAttack(0, true);
+    return true;
+  }
+
+  private startAttack(comboIndex: number, dash = false): void {
     this.attackSerial += 1;
     this.comboIndex = comboIndex;
+    this.isDashAttack = dash;
     this.attackAngle = this.facing; // 공격 방향은 시작 순간에 고정
+    this.attackStart = { x: this.x, y: this.y };
     this.attackBuffered = false;
     this.enter('attack');
-    this.events.push({ type: 'attackStart', comboIndex, angle: this.attackAngle });
+    this.events.push({ type: 'attackStart', kind: dash ? 'dash' : 'combo', comboIndex, angle: this.attackAngle });
   }
 
   /**
@@ -287,8 +343,16 @@ export class PlayerModel {
       this.setPosition(this.x + dir.x * step, this.y + dir.y * step);
     }
     const phase = this.attackPhase(hit);
+    // 돌진: 준비 동안 공격 방향으로 미끄러짐 (준비가 끝나는 프레임에 정확히 끝까지)
+    if (hit.lungeDistance && this.stateTimeMs - dtMs < hit.startupMs) {
+      const k = Math.min(1, this.stateTimeMs / hit.startupMs);
+      this.setPosition(
+        this.attackStart.x + Math.cos(this.attackAngle) * hit.lungeDistance * k,
+        this.attackStart.y + Math.sin(this.attackAngle) * hit.lungeDistance * k,
+      );
+    }
     const totalMs = hit.startupMs + hit.activeMs + hit.recoveryMs;
-    const hasNextHit = this.comboIndex < this.cfg.attackHits.length - 1;
+    const hasNextHit = !this.isDashAttack && this.comboIndex < this.cfg.attackHits.length - 1;
 
     if (phase === 'recovery') {
       if (input.dash && this.canDashCancel(hit, phase)) {
@@ -367,7 +431,7 @@ export class PlayerModel {
   // ───────────────────────── 보조 ─────────────────────────
 
   private currentHit(): AttackHitConfig {
-    return this.cfg.attackHits[this.comboIndex];
+    return this.isDashAttack ? this.cfg.dashAttack.hit : this.cfg.attackHits[this.comboIndex];
   }
 
   private attackPhase(hit: AttackHitConfig): AttackPhase {
@@ -384,6 +448,7 @@ export class PlayerModel {
   }
 
   private canDashCancel(hit: AttackHitConfig, phase: AttackPhase): boolean {
+    if (hit.dashCancelable === false) return false;
     return phase === 'recovery' && this.attackPhaseProgress(hit, phase) >= this.cfg.attackDashCancelFrom;
   }
 

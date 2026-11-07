@@ -27,6 +27,15 @@ export interface AttackHitConfig {
    * 공격 방향은 움직여도 바뀌지 않는다.
    */
   moveSpeedRatio: number;
+  /** 경직 중 대시 캔슬 허용 여부 (기본 true). 3타는 false = 하이리스크 */
+  dashCancelable?: boolean;
+  /** 보스 자세 게이지에 쌓이는 양의 배율 (기본 1). 3타는 2 = 하이리턴 */
+  postureMultiplier?: number;
+  /** 판정 모양 (기본 'sector'). 'rect'면 range = 길이, width = 폭 */
+  shape?: 'sector' | 'rect';
+  width?: number;
+  /** 준비 동안 공격 방향으로 미끄러지는 거리 (기본 0) */
+  lungeDistance?: number;
 }
 
 export interface PlayerConfig {
@@ -46,6 +55,14 @@ export interface PlayerConfig {
   };
   /** 콤보 순서대로 1타, 2타, 3타 */
   attackHits: AttackHitConfig[];
+  /**
+   * 대시 찌르기: 대시 중 클릭(대시가 끝나면 바로 나감) 또는 대시가 끝난 뒤 inputWindowMs 안에 클릭.
+   * 콤보로 이어지지 않는다 (찌른 뒤 다시 공격하면 1타부터).
+   */
+  dashAttack: {
+    inputWindowMs: number;
+    hit: AttackHitConfig;
+  };
   /**
    * 공격 경직(recovery) 중 대시로 캔슬할 수 있게 되는 시점 (경직 시간 대비 비율, 0~1).
    * 0.4 → 경직의 앞 40%는 캔슬 불가, 뒤 60%는 대시로 캔슬 가능.
@@ -78,24 +95,35 @@ export const PLAYER: PlayerConfig = {
   moveSpeed: 220,
   maxHp: 100,
   maxStamina: 100,
-  staminaRegenPerSec: 40,
+  staminaRegenPerSec: 20,
   staminaRegenDelayMs: 500,
   dash: {
-    distance: 140,
-    durationMs: 180,
-    invulnMs: 160,
+    distance: 98,
+    durationMs: 150,
+    invulnMs: 140,
     staminaCost: 25,
   },
   attackHits: [
-    { startupMs: 220, activeMs: 100, recoveryMs: 300, comboLinkFrom: 0.5, damage: 10, range: 56, arcDeg: 100, staminaCost: 12, moveSpeedRatio: 0.45 },
-    { startupMs: 200, activeMs: 100, recoveryMs: 320, comboLinkFrom: 0.7, damage: 10, range: 56, arcDeg: 100, staminaCost: 12, moveSpeedRatio: 0.45 },
-    { startupMs: 380, activeMs: 120, recoveryMs: 480, comboLinkFrom: 1, damage: 18, range: 66, arcDeg: 140, staminaCost: 18, moveSpeedRatio: 0 },
+    { startupMs: 220, activeMs: 100, recoveryMs: 300, comboLinkFrom: 0.5, damage: 10, range: 56, arcDeg: 100, staminaCost: 6, moveSpeedRatio: 0.45 },
+    { startupMs: 200, activeMs: 100, recoveryMs: 320, comboLinkFrom: 0.7, damage: 10, range: 56, arcDeg: 100, staminaCost: 6, moveSpeedRatio: 0.45 },
+    // 3타: 한 바퀴 베기. 충전이 길고 경직 중 대시 캔슬 불가(리스크), 피해·자세 게이지가 큼(리턴)
+    {
+      startupMs: 550, activeMs: 140, recoveryMs: 700, comboLinkFrom: 1, damage: 35, range: 90, arcDeg: 360, staminaCost: 9,
+      moveSpeedRatio: 0, dashCancelable: false, postureMultiplier: 2,
+    },
   ],
+  dashAttack: {
+    inputWindowMs: 150,
+    hit: {
+      startupMs: 120, activeMs: 100, recoveryMs: 350, comboLinkFrom: 1, damage: 14, range: 80, arcDeg: 0, staminaCost: 6,
+      moveSpeedRatio: 0, shape: 'rect', width: 26, lungeDistance: 30,
+    },
+  },
   attackDashCancelFrom: 0.4,
   parry: {
     activeMs: 150,
     recoveryMs: 250,
-    staminaCost: 8,
+    staminaCost: 18,
   },
   potion: {
     count: 3,

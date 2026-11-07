@@ -380,3 +380,79 @@ describe('피격과 사망', () => {
     expect(p.attack!.serial).not.toBe(first);
   });
 });
+
+describe('3타: 한 바퀴 베기 (하이리스크 하이리턴)', () => {
+  const h3 = PLAYER.attackHits[2];
+
+  /** 버튼을 누르고 있어 1·2·3타를 이어서 3타 시작까지 진행 */
+  function toThirdHit(p: PlayerModel): void {
+    for (let i = 0; i < 500 && p.attack?.comboIndex !== 2; i++) press(p, { attackHeld: true });
+    expect(p.attack?.comboIndex).toBe(2);
+  }
+
+  it('뒤쪽까지 판정이 닿는 360도 베기다', () => {
+    const p = newPlayer();
+    toThirdHit(p);
+    const shape = p.attack!.shape;
+    expect(shape.kind === 'sector' && shape.arcRad).toBeCloseTo(Math.PI * 2, 10);
+  });
+
+  it('경직이 끝날 때까지 대시로 캔슬할 수 없다', () => {
+    const p = newPlayer();
+    toThirdHit(p);
+    wait(p, h3.startupMs + h3.activeMs + h3.recoveryMs * 0.9 - STEP_MS);
+    expect(p.attack?.phase).toBe('recovery');
+    expect(p.attack?.canDashCancel).toBe(false);
+    press(p, { dash: true, moveX: 1 });
+    expect(p.state).toBe('attack');
+  });
+
+  it('보스 자세 게이지 배율이 1보다 크다', () => {
+    const p = newPlayer();
+    toThirdHit(p);
+    expect(p.attack!.postureMultiplier).toBeGreaterThan(1);
+  });
+});
+
+describe('대시 찌르기', () => {
+  const D = PLAYER.dashAttack;
+
+  it('대시 중에 클릭하면 대시가 끝나자마자 찌르기가 나간다', () => {
+    const p = newPlayer();
+    press(p, { dash: true, moveX: 1, aimAngle: 0 });
+    press(p, { attack: true, aimAngle: 0 });
+    wait(p, PLAYER.dash.durationMs);
+    expect(p.state).toBe('attack');
+    expect(p.attack?.kind).toBe('dash');
+    expect(p.attack?.shape.kind).toBe('rect');
+  });
+
+  it('대시가 끝난 직후 입력 창 안에 클릭해도 나가고, 창이 지나면 평범한 1타가 나간다', () => {
+    const inWindow = newPlayer();
+    press(inWindow, { dash: true, moveX: 1 });
+    wait(inWindow, PLAYER.dash.durationMs + D.inputWindowMs - STEP_MS * 2);
+    press(inWindow, { attack: true });
+    expect(inWindow.attack?.kind).toBe('dash');
+
+    const late = newPlayer();
+    press(late, { dash: true, moveX: 1 });
+    wait(late, PLAYER.dash.durationMs + D.inputWindowMs + STEP_MS * 3);
+    press(late, { attack: true });
+    expect(late.attack?.kind).toBe('combo');
+    expect(late.attack?.comboIndex).toBe(0);
+  });
+
+  it('준비 동안 앞으로 미끄러지고, 콤보로 이어지지 않는다', () => {
+    const p = newPlayer();
+    press(p, { dash: true, moveX: 1, aimAngle: 0 });
+    press(p, { attack: true, aimAngle: 0 });
+    for (let i = 0; i < 100 && p.state !== 'attack'; i++) wait(p, STEP_MS);
+    const startX = p.x; // 찌르기가 막 시작된 순간
+    hold(p, { attackHeld: true, aimAngle: 0 }, D.hit.startupMs);
+    expect(p.x - startX).toBeCloseTo(D.hit.lungeDistance!, 0);
+
+    hold(p, { attackHeld: true, aimAngle: 0 }, D.hit.activeMs + D.hit.recoveryMs);
+    // 누르고 있어도 2타로 이어지지 않고 끝난 뒤 새 1타가 시작된다
+    expect(p.attack === null || (p.attack.kind === 'combo' && p.attack.comboIndex === 0)).toBe(true);
+  });
+});

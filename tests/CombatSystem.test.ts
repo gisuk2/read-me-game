@@ -28,8 +28,8 @@ function fakePlayer(over: Partial<CombatPlayer> = {}): CombatPlayer & { hits: nu
 }
 
 /** 테스트용 가짜 보스 */
-function fakeBoss(over: Partial<CombatBoss> = {}): CombatBoss & { hits: number[]; parried: number } {
-  const state = { hits: [] as number[], parried: 0 };
+function fakeBoss(over: Partial<CombatBoss> = {}): CombatBoss & { hits: number[]; multipliers: number[]; parried: number } {
+  const state = { hits: [] as number[], multipliers: [] as number[], parried: 0 };
   return {
     x: 100,
     y: 0,
@@ -44,8 +44,12 @@ function fakeBoss(over: Partial<CombatBoss> = {}): CombatBoss & { hits: number[]
     get parried() {
       return state.parried;
     },
-    applyHit(damage: number) {
+    get multipliers() {
+      return state.multipliers;
+    },
+    applyHit(damage: number, postureMultiplier = 1) {
       state.hits.push(damage);
+      state.multipliers.push(postureMultiplier);
       return { died: false, staggerStarted: false, dealt: damage };
     },
     onParried() {
@@ -62,18 +66,18 @@ const rules = { bossHittableMaxZ: 20 };
 const circleOnPlayer: AttackShape = { kind: 'circle', cx: 0, cy: 0, radius: 50 };
 const bossAttack = (parryable: boolean) => ({
   phase: 'active' as const,
-  pattern: { id: 'sweep' as const, damage: 20, parryable },
+  pattern: { id: 'sweep' as const, damage: 20 },
+  parryable,
   shape: circleOnPlayer,
 });
 
 /** 오른쪽(보스 쪽)을 향한 플레이어 공격 판정 */
-const playerSwing = (serial: number) => ({
+const playerSwing = (serial: number, postureMultiplier = 1) => ({
   serial,
   phase: 'active' as const,
-  angle: 0,
-  range: 70,
-  arcRad: Math.PI / 2,
+  shape: { kind: 'sector' as const, cx: 0, cy: 0, radius: 70, angle: 0, arcRad: Math.PI / 2 },
   damage: 10,
+  postureMultiplier,
 });
 
 describe('플레이어 → 보스', () => {
@@ -95,6 +99,13 @@ describe('플레이어 → 보스', () => {
     expect(boss.hits.length).toBe(1);
     combat.resolve(fakePlayer({ attack: playerSwing(2) }), boss); // 다음 타
     expect(boss.hits.length).toBe(2);
+  });
+
+  it('공격의 자세 게이지 배율을 보스에게 전달한다 (3타)', () => {
+    const combat = new CombatSystem(rules);
+    const boss = fakeBoss();
+    combat.resolve(fakePlayer({ attack: playerSwing(1, 2) }), boss);
+    expect(boss.multipliers).toEqual([2]);
   });
 
   it('준비 단계에서는 맞지 않는다 (판정 단계에서만)', () => {
@@ -120,6 +131,18 @@ describe('보스 → 플레이어', () => {
     combat.resolve(player, boss);
     combat.resolve(player, boss);
     expect(player.hits).toEqual([20]);
+  });
+
+  it('연속기: 다음 타(공격 번호가 바뀜)는 다시 맞는다', () => {
+    const combat = new CombatSystem(rules);
+    const player = fakePlayer();
+    const step1 = fakeBoss({ attack: bossAttack(true), attackSerial: 1 });
+    const step2 = fakeBoss({ attack: bossAttack(true), attackSerial: 2 });
+    combat.resolve(player, step1);
+    combat.resolve(player, step1);
+    combat.resolve(player, step2);
+    combat.resolve(player, step2);
+    expect(player.hits).toEqual([20, 20]);
   });
 
   it('대시 무적 중에는 피해 없이 회피로 기록된다 (한 공격당 한 번)', () => {

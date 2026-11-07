@@ -20,10 +20,11 @@ export interface CombatPlayer {
   readonly attack: {
     serial: number;
     phase: 'startup' | 'active' | 'recovery';
-    angle: number;
-    range: number;
-    arcRad: number;
+    /** 판정 범위 (부채꼴·직사각형) */
+    shape: AttackShape;
     damage: number;
+    /** 보스 자세 게이지 배율 (3타 = 2) */
+    postureMultiplier: number;
   } | null;
   applyHit(damage: number, fromX: number, fromY: number): { died: boolean };
 }
@@ -37,10 +38,11 @@ export interface CombatBoss {
   readonly attackSerial: number;
   readonly attack: {
     phase: 'telegraph' | 'active' | 'recovery';
-    pattern: { id: BossPatternId; damage: number; parryable: boolean };
+    pattern: { id: BossPatternId; damage: number };
+    parryable: boolean;
     shape: AttackShape;
   } | null;
-  applyHit(damage: number): { died: boolean; staggerStarted: boolean; dealt: number };
+  applyHit(damage: number, postureMultiplier?: number): { died: boolean; staggerStarted: boolean; dealt: number };
   onParried(): { staggerStarted: boolean };
 }
 
@@ -82,11 +84,10 @@ export class CombatSystem {
     if (!atk || atk.phase !== 'active' || atk.serial === this.lastPlayerSwing) return;
     if (boss.z > this.rules.bossHittableMaxZ) return; // 점프 중인 보스는 맞지 않음
 
-    const shape: AttackShape = { kind: 'sector', cx: player.x, cy: player.y, radius: atk.range, angle: atk.angle, arcRad: atk.arcRad };
-    if (!circleHitsShape(boss.x, boss.y, boss.radius, shape)) return;
+    if (!circleHitsShape(boss.x, boss.y, boss.radius, atk.shape)) return;
 
     this.lastPlayerSwing = atk.serial;
-    const result = boss.applyHit(atk.damage);
+    const result = boss.applyHit(atk.damage, atk.postureMultiplier);
     events.push({ type: 'playerHitBoss', damage: result.dealt });
     if (result.staggerStarted) events.push({ type: 'bossStaggered' });
     if (result.died) events.push({ type: 'bossDied' });
@@ -96,6 +97,7 @@ export class CombatSystem {
    * 보스 공격 판정 순서:
    *   1. 대시 무적 중 → 회피 (판정 시간이 남아 있으면 무적이 끝난 뒤 맞을 수 있음)
    *   2. 패링 판정 중 + 패링 가능한 공격 → 패링 성공
+ *   (연속기는 타마다 공격 번호가 달라서, 타마다 따로 판정된다)
    *   3. 그 외 → 피격 (패링 불가 공격은 패링 중에도 맞음)
    */
   private resolveBossAttack(player: CombatPlayer, boss: CombatBoss, events: CombatEvent[]): void {
@@ -115,7 +117,7 @@ export class CombatSystem {
 
     this.lastBossAttackResolved = boss.attackSerial;
 
-    if (player.isParryActive && atk.pattern.parryable) {
+    if (player.isParryActive && atk.parryable) {
       const result = boss.onParried();
       events.push({ type: 'playerParried', patternId: id });
       if (result.staggerStarted) events.push({ type: 'bossStaggered' });

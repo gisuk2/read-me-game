@@ -23,9 +23,16 @@ const DASH = 10;
 const GAP = 7;
 /** 패링 불가 공격의 바깥쪽 두 번째 점선 간격 */
 const DOUBLE_LINE_OFFSET = 6;
+/** 무기 날 길이 */
+const WEAPON_LEN = 58;
 
 /**
  * 보스와 공격 범위를 그린다 (로직 없음).
+ *
+ * 몸짓 규칙 (바닥 예고 없이도 읽히도록)
+ *  - 무기: 패턴마다 다른 준비 자세 (휘두르기 = 뒤로 젖힘, 찌르기 = 뒤로 당김, 회전 = 감아 돌림, 내려찍기 = 치켜듦)
+ *  - 연속 베기는 타마다 젖히는 방향이 좌우로 바뀜
+ *  - 강패턴(패링 불가)은 준비 중 무기가 붉게 빛남
  *
  * 예고 규칙 ("빨강 = 위험" 하나만 쓴다)
  *  - 예고: 빨간 점선 + 점점 진해지는 옅은 채움 (언제 터지는지 감을 줌)
@@ -52,6 +59,7 @@ export class BossView {
     this.body.clear();
     this.drawAttack(m);
     this.drawShadow(m);
+    this.drawWeapon(m);
     this.drawBody(m);
   }
 
@@ -64,11 +72,14 @@ export class BossView {
     const outline = shapeOutline(atk.shape);
 
     if (atk.phase === 'telegraph') {
-      g.fillStyle(RED, 0.04 + 0.14 * atk.phaseProgress);
+      // 조준을 따라오는 동안은 가늘고 옅게, 고정되면 굵고 진하게 → "이제 움직여도 된다"는 신호
+      const width = atk.locked ? 2.5 : 1.5;
+      const alpha = atk.locked ? 1 : 0.55;
+      g.fillStyle(RED, (0.04 + 0.14 * atk.phaseProgress) * (atk.locked ? 1 : 0.6));
       tracePolygon(g, outline);
       g.fillPath();
-      this.dashed(outline, 2, 1);
-      if (!atk.pattern.parryable) this.dashed(shapeOutline(expandShape(atk.shape, DOUBLE_LINE_OFFSET)), 2, 1);
+      this.dashed(outline, width, alpha);
+      if (!atk.parryable) this.dashed(shapeOutline(expandShape(atk.shape, DOUBLE_LINE_OFFSET)), width, alpha);
       return;
     }
 
@@ -92,6 +103,68 @@ export class BossView {
     const g = this.ground;
     g.lineStyle(width, RED, alpha);
     for (const [a, b] of dashPolyline(points, DASH, GAP, true)) g.lineBetween(a.x, a.y, b.x, b.y);
+  }
+
+  // ───────────────────────── 무기 ─────────────────────────
+
+  /**
+   * 무기 = 몸 가장자리에서 뻗은 굵은 선.
+   * 각도(wa)와 손 위치(hand: 중심에서의 거리), 날 길이(len)를 상태별로 정한다.
+   */
+  private drawWeapon(m: BossModel): void {
+    if (m.isDead) return;
+    const r = this.radius;
+    const cx = m.x;
+    const cy = m.y - m.z;
+    const atk = m.attack;
+    let wa = m.facing + 1.1;
+    let hand = r * 0.75;
+    let len = WEAPON_LEN;
+    let glow = false;
+
+    if (m.state === 'flinch') wa = m.facing + 2.3;
+    if (m.isStaggered) wa = m.facing + Math.PI * 0.8;
+
+    if (atk) {
+      const p = atk.pattern;
+      const t = atk.phaseProgress;
+      const e = 1 - (1 - t) * (1 - t); // 처음엔 빠르게, 끝에서 천천히 (준비 동작이 점점 무거워짐)
+      glow = !atk.parryable && atk.phase === 'telegraph';
+      const aim = atk.shape.kind === 'sector' || atk.shape.kind === 'rect' ? atk.shape.angle : m.facing;
+
+      if (p.shape === 'sector') {
+        const side = atk.step % 2 === 0 ? 1 : -1;
+        const half = (p.arcDeg * Math.PI) / 360;
+        const back = half + 0.5;
+        if (atk.phase === 'telegraph') wa = aim + side * (half * 0.6 + 0.5 * e + 0.2);
+        else if (atk.phase === 'active') wa = aim + side * back - side * (back + half) * t;
+        else wa = aim - side * half;
+      } else if (p.shape === 'rect') {
+        wa = aim;
+        if (atk.phase === 'telegraph') hand = r * 0.75 - 30 * e;
+        else if (atk.phase === 'active') { hand = r * 0.75 + 25; len = WEAPON_LEN + 25; }
+      } else if (p.anchor === 'self') {
+        if (atk.phase === 'telegraph') wa = m.facing + 1.1 + 1.6 * e;
+        else if (atk.phase === 'active') wa = m.facing + 2.7 + Math.PI * 2 * t;
+        else wa = m.facing + 2.7;
+      } else {
+        // 점프 내려찍기: 공중에서는 치켜들고(화면 위쪽), 착지하면 앞으로 내려놓음
+        if (atk.phase === 'telegraph') { wa = -Math.PI / 2; hand = r * 0.6; }
+        else { wa = m.facing; len = WEAPON_LEN + 10; }
+      }
+    }
+
+    const hx = cx + Math.cos(wa) * hand;
+    const hy = cy + Math.sin(wa) * hand;
+    const tx = hx + Math.cos(wa) * len;
+    const ty = hy + Math.sin(wa) * len;
+    const g = this.body;
+    if (glow) {
+      g.lineStyle(14, RED, 0.25);
+      g.lineBetween(hx, hy, tx, ty);
+    }
+    g.lineStyle(6, glow ? RED : m.isStaggered ? REST_GREY : BLACK, 1);
+    g.lineBetween(hx, hy, tx, ty);
   }
 
   // ───────────────────────── 보스 ─────────────────────────

@@ -21,6 +21,8 @@ function run(boss: BossModel, target: { x: number; y: number }, ms: number): Bos
 }
 
 const pattern = (id: string) => BOSS.patterns.find((p) => p.id === id)!;
+/** 한 타짜리 패턴의 타 설정 */
+const only = (id: string) => pattern(id).steps[0];
 
 describe('공격 고르기', () => {
   it('가까울 때는 찌르기·점프 내려찍기를 고르지 않는다 (최소 거리)', () => {
@@ -67,21 +69,32 @@ describe('보스 상태 머신', () => {
     expect(events.some((e) => e.type === 'telegraphStart')).toBe(true);
   });
 
-  it('예고가 시작되면 조준이 고정된다 (플레이어가 움직여도 범위가 따라오지 않음)', () => {
-    const boss = new BossModel(500, 500, BOUNDS, BOSS, () => 0);
+  it('예고 앞부분에는 조준이 플레이어를 따라오고, 고정된 뒤에는 움직여도 따라오지 않는다', () => {
+    const boss = new BossModel(500, 500, BOUNDS, BOSS, () => 0); // 휘두르기
     run(boss, { x: 550, y: 500 }, BOSS.minIdleMs + STEP_MS); // 오른쪽을 조준하고 예고 시작
-    const angleAtStart = boss.attack!.shape.kind === 'sector' ? boss.attack!.shape.angle : NaN;
-    run(boss, { x: 500, y: 600 }, 200); // 플레이어가 아래로 이동
-    const shape = boss.attack!.shape;
-    expect(shape.kind === 'sector' && shape.angle).toBeCloseTo(angleAtStart, 10);
-    expect(boss.facing).toBeCloseTo(angleAtStart, 10);
+    const sweep = only('sweep');
+    const angleOf = () => (boss.attack!.shape.kind === 'sector' ? boss.attack!.shape.angle : NaN);
+    const start = angleOf();
+    expect(boss.attack!.locked).toBe(false);
+
+    // 추적 구간: 아래로 움직이면 조준이 따라 내려옴 (회전 속도 제한 안에서)
+    run(boss, { x: 500, y: 600 }, 200);
+    expect(angleOf()).toBeGreaterThan(start + 0.1);
+    expect(angleOf() - start).toBeLessThanOrEqual(BOSS.aimTrackSpeed * 0.21 + 1e-9);
+
+    // 고정 이후: 다시 움직여도 그대로
+    run(boss, { x: 500, y: 600 }, sweep.telegraphMs * sweep.trackRatio - 200 + STEP_MS);
+    expect(boss.attack!.locked).toBe(true);
+    const lockedAngle = angleOf();
+    run(boss, { x: 400, y: 500 }, 150);
+    expect(angleOf()).toBeCloseTo(lockedAngle, 10);
   });
 
   it('예고 → 판정 → 경직 → 관찰 순서로 정해진 시간만큼 진행된다', () => {
     const boss = new BossModel(500, 500, BOUNDS, BOSS, () => 0);
     const target = { x: 550, y: 500 };
     run(boss, target, BOSS.minIdleMs + STEP_MS);
-    const sweep = pattern('sweep');
+    const sweep = only('sweep');
 
     const toActive = run(boss, target, sweep.telegraphMs);
     expect(boss.state).toBe('active');
@@ -95,26 +108,26 @@ describe('보스 상태 머신', () => {
     expect(toEnd.some((e) => e.type === 'attackEnd' && e.patternId === 'sweep')).toBe(true);
   });
 
-  it('점프 내려찍기: 공중에 떴다가 예고 시작 순간의 플레이어 위치에 착지하고, 경직 후 숨을 고른다', () => {
+  it('점프 내려찍기: 착지 지점이 고정 전까지 따라오고, 고정 뒤 도망가도 그 지점에 착지한 뒤 숨을 고른다', () => {
     const boss = new BossModel(200, 200, BOUNDS, BOSS, () => 0.99); // 멀리서 → 마지막 후보(점프 내려찍기)
-    const target = { x: 700, y: 600 };
-    run(boss, target, BOSS.minIdleMs + STEP_MS);
+    run(boss, { x: 700, y: 600 }, BOSS.minIdleMs + STEP_MS);
     expect(boss.attack?.pattern.id).toBe('slam');
+    const slam = only('slam');
 
-    const slam = pattern('slam');
-    run(boss, { x: 100, y: 900 }, slam.telegraphMs / 2); // 플레이어가 도망가도
+    run(boss, { x: 650, y: 650 }, slam.telegraphMs * slam.trackRatio); // 추적 구간에 조금 이동 → 따라옴, 그리고 고정
+    expect(boss.attack!.locked).toBe(true);
     expect(boss.z).toBeGreaterThan(0);
 
-    run(boss, { x: 100, y: 900 }, slam.telegraphMs / 2 + STEP_MS);
+    run(boss, { x: 100, y: 900 }, slam.telegraphMs * (1 - slam.trackRatio) + STEP_MS); // 고정 뒤 도망
     expect(boss.state).toBe('active');
     expect(boss.z).toBe(0);
-    expect(boss.x).toBeCloseTo(700, 5); // 예고 시작 때의 위치에 착지
-    expect(boss.y).toBeCloseTo(600, 5);
+    expect(boss.x).toBeCloseTo(650, 5);
+    expect(boss.y).toBeCloseTo(650, 5);
 
-    const rest = run(boss, target, slam.activeMs + slam.recoveryMs);
+    const rest = run(boss, { x: 650, y: 650 }, slam.activeMs + slam.recoveryMs);
     expect(boss.isResting).toBe(true);
     expect(rest.some((e) => e.type === 'restStart')).toBe(true);
-    run(boss, target, slam.restMs);
+    run(boss, { x: 650, y: 650 }, pattern('slam').restMs);
     expect(boss.state).toBe('watch');
   });
 
@@ -252,5 +265,120 @@ describe('체력·자세 게이지', () => {
     runUntilWatch(boss, target);
     for (let i = 0; i < 1000 && boss.state !== 'telegraph'; i++) boss.update(target, STEP_MS);
     expect(boss.attackSerial).toBe(first + 1);
+  });
+});
+
+/** 원하는 패턴만 들어 있는 설정 (고르기 결과를 고정) */
+const only1 = (id: string) => ({ ...BOSS, patterns: [pattern(id)] });
+
+/** 다음 상태(들) 중 하나가 될 때까지 진행 */
+function runUntil(boss: BossModel, target: { x: number; y: number }, ok: () => boolean, maxMs = 10000): BossEvent[] {
+  const all: BossEvent[] = [];
+  for (let t = 0; t < maxMs && !ok(); t += STEP_MS) all.push(...boss.update(target, STEP_MS));
+  return all;
+}
+
+describe('카테고리', () => {
+  it('일반 패턴은 패링 가능, 강 패턴은 패링 불가', () => {
+    for (const p of BOSS.patterns) {
+      const boss = new BossModel(500, 500, BOUNDS, only1(p.id), () => 0);
+      runUntil(boss, { x: 560, y: 500 }, () => boss.attack !== null);
+      expect(boss.attack!.parryable).toBe(p.category === 'normal');
+    }
+  });
+});
+
+describe('돌진', () => {
+  it('판정 때 조준 방향으로 돌진 거리만큼 미끄러지고, 예고 범위는 처음부터 돌진한 위치에 있다', () => {
+    const boss = new BossModel(500, 500, BOUNDS, only1('sweep'), () => 0);
+    const target = { x: 560, y: 500 }; // 오른쪽
+    runUntil(boss, target, () => boss.attack !== null);
+    const lunge = only('sweep').lungeDistance;
+    const shape = boss.attack!.shape;
+    expect(shape.kind === 'sector' && shape.cx).toBeCloseTo(500 + lunge, 5);
+
+    runUntil(boss, target, () => boss.state === 'recovery');
+    expect(boss.x).toBeCloseTo(500 + lunge, 5);
+    expect(boss.y).toBeCloseTo(500, 5);
+  });
+
+  it('경기장 밖으로는 돌진하지 않는다', () => {
+    const boss = new BossModel(BOUNDS.width - BOSS.radius, 500, BOUNDS, only1('sweep'), () => 0);
+    runUntil(boss, { x: BOUNDS.width - 1, y: 500 }, () => boss.state === 'recovery');
+    expect(boss.x).toBeLessThanOrEqual(BOUNDS.width - BOSS.radius);
+  });
+});
+
+describe('연속 베기', () => {
+  const combo = pattern('combo');
+
+  it('정해진 타 수만큼 예고·판정을 반복하고, 타마다 공격 번호가 바뀐다', () => {
+    const boss = new BossModel(500, 500, BOUNDS, only1('combo'), () => 0);
+    const target = { x: 560, y: 500 };
+    const serials = new Set<number>();
+    const events: BossEvent[] = [];
+    for (let t = 0; t < 10000 && boss.state !== 'watch'; t += STEP_MS) {
+      events.push(...boss.update(target, STEP_MS));
+      if (boss.attack?.phase === 'active') serials.add(boss.attackSerial);
+    }
+    const actives = events.filter((e) => e.type === 'attackActive');
+    expect(actives.map((e) => e.type === 'attackActive' && e.step)).toEqual(combo.steps.map((_, i) => i));
+    expect(serials.size).toBe(combo.steps.length);
+    expect(events.filter((e) => e.type === 'attackEnd').length).toBe(1);
+  });
+
+  it('중간 타를 패링당해도 계속 몰아치고, 마지막 타를 패링당하면 움찔한다', () => {
+    const boss = new BossModel(500, 500, BOUNDS, only1('combo'), () => 0);
+    const target = { x: 560, y: 500 };
+    runUntil(boss, target, () => boss.attack?.phase === 'active');
+    boss.onParried();
+    expect(boss.posture).toBe(BOSS.posture.perParry);
+    expect(boss.state).toBe('active');
+    expect(boss.attack!.step).toBe(0);
+
+    runUntil(boss, target, () => boss.attack?.phase === 'active' && boss.attack.step === combo.steps.length - 1);
+    boss.onParried();
+    expect(boss.state).toBe('flinch');
+  });
+
+  it('끊는 지점: 정해진 타 수 이전에는 끊을 수 없고, 이후 틈에서는 끊고 다른 공격으로 이어간다', () => {
+    const cfg = { ...BOSS, patterns: [combo, pattern('sweep')] }; // 난수 0 → 연속 베기 먼저
+    const boss = new BossModel(500, 500, BOUNDS, cfg, () => 0);
+    const target = { x: 560, y: 500 };
+    const after = combo.cancelAfterHits!;
+
+    runUntil(boss, target, () => boss.attack?.phase === 'telegraph' && boss.attack.step === 0);
+    expect(boss.cancelCombo()).toBe(false); // 예고 중
+
+    for (let hit = 1; hit < after; hit++) {
+      runUntil(boss, target, () => boss.attack?.phase === 'recovery' && boss.attack.step === hit - 1);
+      expect(boss.cancelCombo()).toBe(false); // 아직 이름
+    }
+    runUntil(boss, target, () => boss.attack?.phase === 'recovery' && boss.attack.step === after - 1);
+    expect(boss.cancelCombo('sweep')).toBe(true);
+    expect(boss.attack).toBeNull();
+    expect(boss.plannedPattern?.id).toBe('sweep');
+  });
+
+  it('마지막 타 뒤에는 끊을 것이 없다', () => {
+    const boss = new BossModel(500, 500, BOUNDS, only1('combo'), () => 0);
+    const target = { x: 560, y: 500 };
+    runUntil(boss, target, () => boss.attack?.phase === 'recovery' && boss.attack.step === combo.steps.length - 1);
+    expect(boss.cancelCombo()).toBe(false);
+  });
+
+  it('끊을 수 없는 패턴은 끊기지 않는다', () => {
+    const boss = new BossModel(500, 500, BOUNDS, only1('sweep'), () => 0);
+    runUntil(boss, { x: 560, y: 500 }, () => boss.attack?.phase === 'recovery');
+    expect(boss.cancelCombo()).toBe(false);
+  });
+});
+
+describe('자세 게이지 배율', () => {
+  it('배율만큼 자세 게이지가 더 쌓인다 (체력 피해는 그대로)', () => {
+    const boss = new BossModel(500, 500, BOUNDS, BOSS, () => 0);
+    boss.applyHit(10, 2);
+    expect(boss.hp).toBe(BOSS.maxHp - 10);
+    expect(boss.posture).toBeCloseTo(10 * BOSS.posture.perDamage * 2, 10);
   });
 });

@@ -1,4 +1,4 @@
-import { BOSS, type BossConfig, type BossPatternConfig, type BossPatternId } from '../../config/bossBalance';
+import { BOSS, isParryable, type AttackStep, type BossConfig, type BossPatternConfig, type BossPatternId } from '../../config/bossBalance';
 import { clamp } from '../../utils/math';
 import { degToRad, type Vec2 } from '../../utils/geometry';
 import { wrapAngle, type AttackShape } from '../../utils/shapes';
@@ -11,14 +11,23 @@ export type BossAttackPhase = 'telegraph' | 'active' | 'recovery';
 
 /** 보스가 한 일. 이후 이벤트 버스를 통해 판정·학습·NPC·로그로 전달된다. */
 export type BossEvent =
-  | { type: 'telegraphStart'; patternId: BossPatternId }
-  | { type: 'attackActive'; patternId: BossPatternId }
+  | { type: 'telegraphStart'; patternId: BossPatternId; step: number }
+  | { type: 'aimLocked'; patternId: BossPatternId; step: number }
+  | { type: 'attackActive'; patternId: BossPatternId; step: number }
+  | { type: 'comboCancelled'; patternId: BossPatternId; afterHits: number; next: BossPatternId | null }
   | { type: 'attackEnd'; patternId: BossPatternId }
   | { type: 'restStart' }
   | { type: 'watchStart'; mode: WatchMode; durationMs: number };
 
 export interface BossAttackInfo {
   pattern: BossPatternConfig;
+  /** 지금 몇 번째 타인가 (0부터) */
+  step: number;
+  stepCount: number;
+  /** 패링 가능 여부 (카테고리로 정해짐) */
+  parryable: boolean;
+  /** 조준이 고정되었는가 (고정 전에는 예고 범위가 플레이어를 따라온다) */
+  locked: boolean;
   phase: BossAttackPhase;
   /** 현재 단계 안에서의 진행률 0~1 */
   phaseProgress: number;
@@ -73,9 +82,13 @@ const easeInOut = (t: number): number => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 
  *   (어느 상태든) ─(자세 게이지 가득)→ staggered(자세 붕괴: 받는 피해 증가) ─→ watch
  *   체력 0 → dead
  *
+ * 한 패턴은 여러 타(step)로 이루어질 수 있다 (연속기):
+ *   telegraph(타 0) → active → recovery ─(남은 타 있음)→ telegraph(타 1) → … → 마지막 recovery → (rest) → watch
+ *
  * 공정성 원칙:
- *   - 조준은 예고 시작 순간의 플레이어 위치로 고정한다. 예고가 보여준 범위가 그대로 판정 범위다.
- *   - 예고 중에는 회전하지 않는다.
+ *   - 예고 앞부분(trackRatio)에는 조준이 플레이어를 따라오지만 회전 속도에 제한이 있고, 이후 고정된다.
+ *   - 고정 뒤에는 예고 범위 = 판정 범위. 돌진(lunge)하는 공격은 돌진한 뒤의 위치에 예고가 그려진다.
+ *   - 연속기는 마지막 타를 패링당했을 때만 움찔한다 (중간 타 패링은 자세 게이지만 쌓임).
  */
 export class BossModel {
   x: number;
@@ -98,9 +111,16 @@ export class BossModel {
   private watchDurationMs = 0;
   private pattern: BossPatternConfig | null = null;
   private lastPatternId: BossPatternId | null = null;
+  private stepIndex = 0;
 
   private aimAngle = 0;
+  private locked = false;
+  /** 예고를 시작한 위치 (점프 내려찍기의 출발점) */
   private origin: Vec2 = { x: 0, y: 0 };
+  /** 판정이 나는 위치 = 돌진한 뒤의 보스 중심 */
+  private strikeOrigin: Vec2 = { x: 0, y: 0 };
+  /** 판정이 켜질 때의 위치 (돌진 출발점) */
+  private lungeFrom: Vec2 = { x: 0, y: 0 };
   private landing: Vec2 = { x: 0, y: 0 };
 
   private events: BossEvent[] = [];
@@ -144,9 +164,9 @@ export class BossModel {
 
   /**
    * 플레이어 공격에 맞음 (CombatSystem이 호출).
-   * 자세 붕괴 중이면 피해가 배로 들어가고, 아니면 자세 게이지가 쌓인다.
+   * 자세 붕괴 중이면 피해가 배로 들어가고, 아니면 자세 게이지가 쌓인다 (postureMultiplier: 3타 등 강한 공격의 배율).
    */
-  applyHit(damage: number): { died: boolean; staggerStarted: boolean; dealt: number } {
+  applyHit(damage: number, postureMultiplier = 1): { died: boolean; staggerStarted: boolean; dealt: number } {
     if (this._state === 'dead') return { died: false, staggerStarted: false, dealt: 0 };
     const dealt = this.isStaggered ? damage * this.cfg.staggerDamageMultiplier : damage;
     this.hp = Math.max(0, this.hp - dealt);
@@ -158,7 +178,7 @@ export class BossModel {
       return { died: true, staggerStarted: false, dealt };
     }
     if (this.isStaggered) return { died: false, staggerStarted: false, dealt };
-    return { died: false, staggerStarted: this.addPosture(damage * this.cfg.posture.perDamage), dealt };
+    return { died: false, staggerStarted: this.addPosture(damage * this.cfg.posture.perDamage * postureMultiplier), dealt };
   }
 
   /** 공격이 패링당함 (CombatSystem이 호출). 자세 게이지가 크게 쌓이고 공격이 끊긴다 */
@@ -166,6 +186,8 @@ export class BossModel {
     if (this._state === 'dead' || this.isStaggered) return { staggerStarted: false };
     this.msSinceHurt = 0;
     if (this.addPosture(this.cfg.posture.perParry)) return { staggerStarted: true };
+    // 연속기 중간 타: 막혀도 계속 몰아친다
+    if (this.pattern && this.stepIndex < this.pattern.steps.length - 1) return { staggerStarted: false };
     this.cancelAttack();
     this.enter('flinch');
     return { staggerStarted: false };
@@ -181,14 +203,44 @@ export class BossModel {
     return this.pattern;
   }
 
+  /**
+   * 연속기를 지금 끊는다 (학습 단계에서 "끊고 다른 기술로"에 쓸 자리).
+   * 타와 타 사이의 틈(경직)이고, cancelAfterHits 이상 친 뒤이고, 아직 남은 타가 있을 때만 가능.
+   * next를 주면 그 공격을 바로 이어서 준비한다.
+   */
+  cancelCombo(next?: BossPatternId): boolean {
+    const p = this.pattern;
+    if (!p || this._state !== 'recovery' || p.cancelAfterHits === undefined) return false;
+    const hitsDone = this.stepIndex + 1;
+    if (hitsDone < p.cancelAfterHits || hitsDone >= p.steps.length) return false;
+
+    this.events.push({ type: 'comboCancelled', patternId: p.id, afterHits: hitsDone, next: next ?? null });
+    this.lastPatternId = p.id;
+    const nextPattern = next ? this.cfg.patterns.find((q) => q.id === next) ?? null : null;
+    if (nextPattern) {
+      this.pattern = nextPattern;
+      this.enter('approach');
+      this.stateTimeMs = this.cfg.minIdleMs; // 사거리 안이면 다음 프레임에 바로 예고
+    } else {
+      this.pattern = null;
+      this.startWatch();
+    }
+    return true;
+  }
+
   /** 공격 중(예고·판정·경직)이면 정보, 아니면 null */
   get attack(): BossAttackInfo | null {
     if (this._state !== 'telegraph' && this._state !== 'active' && this._state !== 'recovery') return null;
     const p = this.pattern;
     if (!p) return null;
-    const duration = this._state === 'telegraph' ? p.telegraphMs : this._state === 'active' ? p.activeMs : p.recoveryMs;
+    const s = this.step;
+    const duration = this._state === 'telegraph' ? s.telegraphMs : this._state === 'active' ? s.activeMs : s.recoveryMs;
     return {
       pattern: p,
+      step: this.stepIndex,
+      stepCount: p.steps.length,
+      parryable: isParryable(p),
+      locked: this.locked,
       phase: this._state,
       phaseProgress: Math.min(1, this.stateTimeMs / duration),
       shape: this.shapeOf(p),
@@ -220,13 +272,13 @@ export class BossModel {
         this.updateApproach(target, dtMs);
         break;
       case 'telegraph':
-        this.updateTelegraph();
+        this.updateTelegraph(target, dtMs);
         break;
       case 'active':
-        if (this.stateTimeMs >= this.pattern!.activeMs) this.enter('recovery');
+        this.updateActive();
         break;
       case 'recovery':
-        this.updateRecovery();
+        this.updateRecovery(target);
         break;
       case 'rest':
         if (this.stateTimeMs >= this.pattern!.restMs) this.finishAttack();
@@ -255,27 +307,52 @@ export class BossModel {
     if (this.stateTimeMs >= this.cfg.minIdleMs) this.startTelegraph(target);
   }
 
+  private get step(): AttackStep {
+    return this.pattern!.steps[this.stepIndex];
+  }
+
+  /** 패턴의 첫 타를 시작한다 */
   private startTelegraph(target: Vec2): void {
-    const p = this.pattern!;
     this.aimAngle = Math.atan2(target.y - this.y, target.x - this.x);
+    this.startStep(0, target);
+  }
+
+  /** i번째 타의 예고를 시작한다. 다음 타는 직전 조준에서 이어서 따라온다 */
+  private startStep(i: number, target: Vec2): void {
+    const p = this.pattern!;
+    this.stepIndex = i;
     this.facing = this.aimAngle;
     this.origin = { x: this.x, y: this.y };
     this._attackSerial += 1;
-    if (p.shape === 'circle' && p.anchor === 'target') {
-      const r = this.cfg.radius;
-      this.landing = {
-        x: clamp(target.x, r, this.bounds.width - r),
-        y: clamp(target.y, r, this.bounds.height - r),
-      };
-    }
+    this.locked = false;
+    if (p.shape === 'circle' && p.anchor === 'target') this.landing = this.clampToArena(target);
+    this.updateStrikeOrigin();
     this.enter('telegraph');
-    this.events.push({ type: 'telegraphStart', patternId: p.id });
+    this.events.push({ type: 'telegraphStart', patternId: p.id, step: i });
+    if (this.step.trackRatio <= 0) this.lockAim();
   }
 
-  /** 점프 내려찍기면 예고 동안 착지 지점으로 날아가며 포물선으로 뛰어오른다 */
-  private updateTelegraph(): void {
+  /**
+   * 예고: 앞부분은 조준이 따라오고(회전 속도 제한), 이후 고정.
+   * 점프 내려찍기면 착지 지점으로 날아가며 포물선으로 뛰어오른다.
+   */
+  private updateTelegraph(target: Vec2, dtMs: number): void {
     const p = this.pattern!;
-    const t = Math.min(1, this.stateTimeMs / p.telegraphMs);
+    const s = this.step;
+    const t = Math.min(1, this.stateTimeMs / s.telegraphMs);
+
+    if (!this.locked) {
+      if (t < s.trackRatio) {
+        const desired = Math.atan2(target.y - this.y, target.x - this.x);
+        const step = this.cfg.aimTrackSpeed * (dtMs / 1000);
+        this.aimAngle = wrapAngle(this.aimAngle + clamp(wrapAngle(desired - this.aimAngle), -step, step));
+        this.facing = this.aimAngle;
+        if (p.shape === 'circle' && p.anchor === 'target') this.landing = this.clampToArena(target);
+        this.updateStrikeOrigin();
+      } else {
+        this.lockAim();
+      }
+    }
 
     if (p.shape === 'circle' && p.anchor === 'target') {
       const e = easeInOut(t);
@@ -284,22 +361,54 @@ export class BossModel {
       this.z = (p.jumpHeight ?? 0) * 4 * t * (1 - t);
     }
 
-    if (this.stateTimeMs >= p.telegraphMs) {
+    if (this.stateTimeMs >= s.telegraphMs) {
+      if (!this.locked) this.lockAim();
       this.z = 0;
+      this.lungeFrom = { x: this.x, y: this.y };
       this.enter('active');
-      this.events.push({ type: 'attackActive', patternId: p.id });
+      this.events.push({ type: 'attackActive', patternId: p.id, step: this.stepIndex });
     }
   }
 
-  private updateRecovery(): void {
+  private lockAim(): void {
+    this.locked = true;
+    this.updateStrikeOrigin();
+    this.events.push({ type: 'aimLocked', patternId: this.pattern!.id, step: this.stepIndex });
+  }
+
+  /** 판정: 앞부분(절반) 동안 돌진 지점까지 미끄러진다. 판정 범위는 처음부터 돌진 지점 기준 */
+  private updateActive(): void {
+    const s = this.step;
+    if (s.lungeDistance > 0) {
+      const k = Math.min(1, this.stateTimeMs / (s.activeMs * 0.5));
+      this.x = this.lungeFrom.x + (this.strikeOrigin.x - this.lungeFrom.x) * k;
+      this.y = this.lungeFrom.y + (this.strikeOrigin.y - this.lungeFrom.y) * k;
+    }
+    if (this.stateTimeMs >= s.activeMs) this.enter('recovery');
+  }
+
+  private updateRecovery(target: Vec2): void {
     const p = this.pattern!;
-    if (this.stateTimeMs < p.recoveryMs) return;
+    if (this.stateTimeMs < this.step.recoveryMs) return;
+    if (this.stepIndex < p.steps.length - 1) {
+      this.startStep(this.stepIndex + 1, target);
+      return;
+    }
     if (p.restMs > 0) {
       this.enter('rest');
       this.events.push({ type: 'restStart' });
       return;
     }
     this.finishAttack();
+  }
+
+  /** 돌진한 뒤의 보스 중심 (경기장 밖으로 나가지 않게) */
+  private updateStrikeOrigin(): void {
+    const lunge = this.pattern ? this.step.lungeDistance : 0;
+    this.strikeOrigin = this.clampToArena({
+      x: this.x + Math.cos(this.aimAngle) * lunge,
+      y: this.y + Math.sin(this.aimAngle) * lunge,
+    });
   }
 
   private finishAttack(): void {
@@ -372,11 +481,11 @@ export class BossModel {
   private shapeOf(p: BossPatternConfig): AttackShape {
     switch (p.shape) {
       case 'sector':
-        return { kind: 'sector', cx: this.origin.x, cy: this.origin.y, radius: p.radius, angle: this.aimAngle, arcRad: degToRad(p.arcDeg) };
+        return { kind: 'sector', cx: this.strikeOrigin.x, cy: this.strikeOrigin.y, radius: p.radius, angle: this.aimAngle, arcRad: degToRad(p.arcDeg) };
       case 'rect':
-        return { kind: 'rect', x: this.origin.x, y: this.origin.y, angle: this.aimAngle, length: p.length, width: p.width };
+        return { kind: 'rect', x: this.strikeOrigin.x, y: this.strikeOrigin.y, angle: this.aimAngle, length: p.length, width: p.width };
       case 'circle': {
-        const c = p.anchor === 'target' ? this.landing : this.origin;
+        const c = p.anchor === 'target' ? this.landing : this.strikeOrigin;
         return { kind: 'circle', cx: c.x, cy: c.y, radius: p.radius };
       }
     }
@@ -396,8 +505,13 @@ export class BossModel {
   }
 
   private setPosition(x: number, y: number): void {
+    const c = this.clampToArena({ x, y });
+    this.x = c.x;
+    this.y = c.y;
+  }
+
+  private clampToArena(v: Vec2): Vec2 {
     const r = this.cfg.radius;
-    this.x = clamp(x, r, this.bounds.width - r);
-    this.y = clamp(y, r, this.bounds.height - r);
+    return { x: clamp(v.x, r, this.bounds.width - r), y: clamp(v.y, r, this.bounds.height - r) };
   }
 }

@@ -3,23 +3,52 @@
  * 시간 단위: ms / 거리 단위: px / 각도 단위: 도(deg)
  */
 
-export type BossPatternId = 'sweep' | 'thrust' | 'spin' | 'slam';
+export type BossPatternId = 'sweep' | 'thrust' | 'spin' | 'combo' | 'slam';
+
+/**
+ * 패턴 카테고리 (docs/design/boss-patterns.md §0)
+ *  - normal(일반): 패링 가능. 무기·탄환 공격
+ *  - heavy(강): 패링 불가. 몸 전체·낙하·에너지. 바닥 예고가 이중 점선, 무기가 붉게 빛남
+ */
+export type PatternCategory = 'normal' | 'heavy';
+
+/**
+ * 공격 한 타. 한 패턴은 1타 이상으로 이루어진다 (연속기 = 여러 타).
+ *
+ *   예고(telegraph) ──→ 판정(active) ──→ 경직(recovery) ──→ 다음 타 예고 or 패턴 끝
+ *   └ trackRatio까지는 플레이어를 따라 조준, 이후 고정
+ */
+export interface AttackStep {
+  /** 예고(준비 동작) 시간 */
+  telegraphMs: number;
+  /**
+   * 예고 중 조준을 따라가는 구간 (0~1). 0.6이면 예고의 처음 60% 동안 플레이어를 따라 돌고, 나머지 40%는 고정.
+   * → 너무 일찍 구르면 따라와서 맞고, 고정된 뒤에 움직여야 피한다.
+   */
+  trackRatio: number;
+  /** 판정 순간 앞으로 미끄러져 나가는 거리. 예고 범위는 돌진한 뒤의 위치에 그려진다 (예고 = 판정) */
+  lungeDistance: number;
+  /** 판정이 켜져 있는 시간 */
+  activeMs: number;
+  /** 이 타 뒤의 경직. 마지막 타가 아니면 다음 타까지의 틈 */
+  recoveryMs: number;
+}
 
 interface PatternBase {
   id: BossPatternId;
   /** 화면·로그에 쓰는 이름 */
   name: string;
-  /** 빨간 점선 예고 시간 */
-  telegraphMs: number;
-  /** 판정이 켜져 있는 시간 */
-  activeMs: number;
-  /** 공격 후 경직 (빈틈) */
-  recoveryMs: number;
-  /** 경직 뒤 추가로 쉬는 시간 (큰 빈틈). 없으면 0 */
+  category: PatternCategory;
+  steps: AttackStep[];
+  /** 마지막 타의 경직 뒤 추가로 쉬는 시간 (큰 빈틈). 없으면 0 */
   restMs: number;
+  /** 한 타당 피해 */
   damage: number;
-  /** 패링으로 막을 수 있는가. false면 예고가 이중 점선으로 표시된다 */
-  parryable: boolean;
+  /**
+   * 연속기를 도중에 끊을 수 있는 시점: 이만큼의 타가 끝난 뒤의 틈부터 끊을 수 있다.
+   * 학습 단계에서 "끊고 다른 기술로 넘어가기"에 쓴다. 없으면 끊을 수 없음.
+   */
+  cancelAfterHits?: number;
   /** 이 거리 이상일 때만 후보가 된다 */
   minDistance: number;
   /** 이 거리 안으로 들어오면 예고를 시작한다 (밖이면 다가간다) */
@@ -42,7 +71,10 @@ export interface RectPattern extends PatternBase {
   width: number;
 }
 
-/** 원형. 'self' = 보스 주변, 'target' = 예고 시작 순간의 플레이어 위치(보스가 뛰어올라 그곳에 착지) */
+/**
+ * 원형. 'self' = 보스 주변,
+ * 'target' = 플레이어 위치(보스가 뛰어올라 그곳에 착지). 조준 고정 전까지는 착지 지점이 플레이어를 따라간다.
+ */
 export interface CirclePattern extends PatternBase {
   shape: 'circle';
   radius: number;
@@ -52,6 +84,9 @@ export interface CirclePattern extends PatternBase {
 }
 
 export type BossPatternConfig = SectorPattern | RectPattern | CirclePattern;
+
+/** 일반 = 패링 가능, 강 = 패링 불가 */
+export const isParryable = (p: { category: PatternCategory }): boolean => p.category === 'normal';
 
 export interface BossConfig {
   /** 육각형의 외접원 반지름 */
@@ -74,13 +109,15 @@ export interface BossConfig {
   };
   staggerMs: number;
   staggerDamageMultiplier: number;
-  /** 패링당했을 때 움찔하는 시간 (공격이 끊김) */
+  /** 패링당했을 때 움찔하는 시간 (공격이 끊김). 연속기는 마지막 타를 패링당했을 때만 움찔한다 */
   flinchMs: number;
   /** 공격이 판정되는 높이 한계. 이보다 높이 떠 있으면(점프 중) 맞지 않는다 */
   hittableMaxZ: number;
   moveSpeed: number;
   /** 초당 회전 속도 (라디안) */
   turnSpeed: number;
+  /** 예고 중 조준을 따라가는 초당 회전 속도 (라디안). 너무 빠르면 피할 수 없다 */
+  aimTrackSpeed: number;
   /** 다가가기 시작 후 사거리 안이어도 예고까지 기다리는 최소 시간 */
   minIdleMs: number;
   /** 고른 공격의 사거리까지 이만큼 쫓아가도 못 붙으면 공격을 다시 고른다 */
@@ -103,9 +140,14 @@ export interface BossConfig {
   patterns: BossPatternConfig[];
 }
 
+/** 한 타짜리 패턴의 타 설정을 줄여 쓰기 위한 도우미 */
+const single = (s: AttackStep): AttackStep[] => [s];
+
 /**
- * 1막 수치 (정직하고 읽기 쉬운 보스).
+ * 1막 수치 (정직하고 읽기 쉬운 보스). 예고 시간은 튜토리얼용으로 2c-1 값의 1.25배.
  * 처음 값(예고 0.6~1.0초, 이동 110, 회전 5)은 최종 페이즈 수준이라 이후 "막별 배율"로 되살린다.
+ *
+ * 패턴 순서는 고르기 결과에 영향을 준다 (같은 난수면 앞쪽부터). 새 패턴은 slam 앞에 넣는다.
  */
 export const BOSS: BossConfig = {
   radius: 40,
@@ -116,7 +158,7 @@ export const BOSS: BossConfig = {
     perDamage: 0.6,
     perParry: 30,
     decayPerSec: 12,
-    decayDelayMs: 1500,
+    decayDelayMs: 4000,
   },
   staggerMs: 2000,
   staggerDamageMultiplier: 2,
@@ -124,6 +166,7 @@ export const BOSS: BossConfig = {
   hittableMaxZ: 20,
   moveSpeed: 80,
   turnSpeed: 3,
+  aimTrackSpeed: 4,
   minIdleMs: 300,
   chaseTimeoutMs: 3000,
   outOfRangeWeight: 0.2,
@@ -136,24 +179,36 @@ export const BOSS: BossConfig = {
   },
   patterns: [
     {
-      id: 'sweep', name: '휘두르기', shape: 'sector', radius: 110, arcDeg: 130,
-      telegraphMs: 900, activeMs: 120, recoveryMs: 600, restMs: 0,
-      damage: 20, parryable: true, minDistance: 0, maxDistance: 105, weight: 3,
+      id: 'sweep', name: '휘두르기', category: 'normal', shape: 'sector', radius: 110, arcDeg: 130,
+      steps: single({ telegraphMs: 1125, trackRatio: 0.6, lungeDistance: 25, activeMs: 120, recoveryMs: 600 }),
+      restMs: 0, damage: 20, minDistance: 0, maxDistance: 105, weight: 3,
     },
     {
-      id: 'thrust', name: '찌르기', shape: 'rect', length: 260, width: 50,
-      telegraphMs: 1050, activeMs: 120, recoveryMs: 700, restMs: 0,
-      damage: 25, parryable: true, minDistance: 70, maxDistance: 210, weight: 3,
+      id: 'thrust', name: '찌르기', category: 'normal', shape: 'rect', length: 260, width: 50,
+      steps: single({ telegraphMs: 1310, trackRatio: 0.65, lungeDistance: 40, activeMs: 120, recoveryMs: 700 }),
+      restMs: 0, damage: 25, minDistance: 70, maxDistance: 210, weight: 3,
     },
     {
-      id: 'spin', name: '회전 베기', shape: 'circle', radius: 130, anchor: 'self',
-      telegraphMs: 1350, activeMs: 160, recoveryMs: 750, restMs: 0,
-      damage: 25, parryable: false, minDistance: 0, maxDistance: 115, weight: 2,
+      id: 'spin', name: '회전 베기', category: 'heavy', shape: 'circle', radius: 130, anchor: 'self',
+      steps: single({ telegraphMs: 1690, trackRatio: 0, lungeDistance: 0, activeMs: 160, recoveryMs: 750 }),
+      restMs: 0, damage: 25, minDistance: 0, maxDistance: 115, weight: 2,
     },
     {
-      id: 'slam', name: '점프 내려찍기', shape: 'circle', radius: 90, anchor: 'target', jumpHeight: 130,
-      telegraphMs: 1500, activeMs: 140, recoveryMs: 500, restMs: 1200,
-      damage: 30, parryable: false, minDistance: 230, maxDistance: Number.POSITIVE_INFINITY, weight: 2,
+      // 4연타 돌진. 옆 회피는 다음 타가 따라오고, 4번 다 패링하면 스태미나가 바닥 → 뒤로 빠지기가 정답.
+      // 마지막 타는 박자를 늦춰(지연) 미리 구른 플레이어를 잡는다.
+      id: 'combo', name: '연속 베기', category: 'normal', shape: 'sector', radius: 95, arcDeg: 120,
+      steps: [
+        { telegraphMs: 940, trackRatio: 0.7, lungeDistance: 40, activeMs: 100, recoveryMs: 180 },
+        { telegraphMs: 475, trackRatio: 0.5, lungeDistance: 40, activeMs: 100, recoveryMs: 180 },
+        { telegraphMs: 475, trackRatio: 0.5, lungeDistance: 40, activeMs: 100, recoveryMs: 220 },
+        { telegraphMs: 810, trackRatio: 0.6, lungeDistance: 55, activeMs: 120, recoveryMs: 800 },
+      ],
+      restMs: 0, damage: 15, cancelAfterHits: 2, minDistance: 0, maxDistance: 120, weight: 3,
+    },
+    {
+      id: 'slam', name: '점프 내려찍기', category: 'heavy', shape: 'circle', radius: 90, anchor: 'target', jumpHeight: 130,
+      steps: single({ telegraphMs: 1875, trackRatio: 0.6, lungeDistance: 0, activeMs: 140, recoveryMs: 500 }),
+      restMs: 1200, damage: 30, minDistance: 230, maxDistance: Number.POSITIVE_INFINITY, weight: 2,
     },
   ],
 };

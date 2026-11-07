@@ -180,7 +180,10 @@ export class GameScene extends Phaser.Scene {
     const p = this.player;
     const atk = p.attack;
     let state: string = p.state;
-    if (atk) state = `attack ${atk.comboIndex + 1}타 (${atk.phase})${atk.canDashCancel ? ' [캔슬 가능]' : ''}`;
+    if (atk) {
+      const name = atk.kind === 'dash' ? '대시 찌르기' : `${atk.comboIndex + 1}타`;
+      state = `attack ${name} (${atk.phase})${atk.canDashCancel ? ' [캔슬 가능]' : ''}`;
+    }
     return `플레이어: ${state}${p.isInvulnerable ? ' [무적]' : ''}${p.isParryActive ? ' [패링]' : ''}`;
   }
 
@@ -188,7 +191,11 @@ export class GameScene extends Phaser.Scene {
     const b = this.boss;
     const hp = `HP ${Math.round(b.hp)} · 자세 ${Math.round(b.posture)}`;
     const atk = b.attack;
-    if (atk) return `보스: ${atk.pattern.name} (${atk.phase})${atk.pattern.parryable ? '' : ' [패링 불가]'} · ${hp}`;
+    if (atk) {
+      const step = atk.stepCount > 1 ? ` ${atk.step + 1}/${atk.stepCount}타` : '';
+      const lock = atk.phase === 'telegraph' ? (atk.locked ? ' 고정' : ' 추적') : '';
+      return `보스: ${atk.pattern.name}${step} (${atk.phase}${lock})${atk.parryable ? '' : ' [패링 불가]'} · ${hp}`;
+    }
     const watch = b.currentWatchMode;
     if (watch) return `보스: 관찰 (${WATCH_LABEL[watch]}) · ${hp}`;
     const planned = b.plannedPattern ? ` → ${b.plannedPattern.name} 준비` : '';

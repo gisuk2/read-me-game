@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import type { AttackInfo, PlayerModel } from './PlayerModel';
+import { shapeOutline } from '../../utils/shapes';
 
 const BLACK = 0x000000;
 const WHITE = 0xffffff;
@@ -104,6 +105,22 @@ export class PlayerView {
       return;
     }
 
+    if (atk.kind === 'dash') {
+      this.drawThrust(m, atk);
+      return;
+    }
+
+    // 3타 충전: 몸 둘레에 가는 원이 차오름 (눈에 띄되 살짝만)
+    if (atk.comboIndex === 2 && atk.phase === 'startup') {
+      const g = this.g;
+      g.lineStyle(2, BLACK, 0.15);
+      g.strokeCircle(m.x, m.y, r + 8);
+      g.lineStyle(2, BLACK, 0.55);
+      g.beginPath();
+      g.arc(m.x, m.y, r + 8, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * atk.phaseProgress, false);
+      g.strokePath();
+    }
+
     const { from, to, windup } = this.sweepAngles(atk);
     const thickness = atk.comboIndex === 2 ? 5 : 3;
     const restLen = atk.range * REST_LENGTH_RATIO;
@@ -134,6 +151,32 @@ export class PlayerView {
     } else {
       this.drawBlade(m.x, m.y, to, r, fullLen, thickness, 1);
     }
+  }
+
+  /**
+   * 대시 찌르기: 준비 = 검을 뒤로 당김, 판정 = 앞으로 쭉 뻗음 + 판정 범위 옅게, 경직 = 뻗은 채로 흐려짐
+   */
+  private drawThrust(m: PlayerModel, atk: AttackInfo): void {
+    const r = this.radius;
+    const back = atk.angle;
+    if (atk.phase === 'startup') {
+      const t = easeOutCubic(atk.phaseProgress);
+      this.drawBlade(m.x, m.y, back, r - 10 * t, atk.range * 0.45, 4, 1);
+      return;
+    }
+    if (atk.phase === 'active') {
+      const g = this.g;
+      const pts = shapeOutline(atk.shape);
+      g.fillStyle(BLACK, 0.18);
+      g.beginPath();
+      g.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) g.lineTo(pts[i].x, pts[i].y);
+      g.closePath();
+      g.fillPath();
+      this.drawBlade(m.x, m.y, back, r, atk.range - r, 4, 1);
+      return;
+    }
+    this.drawBlade(m.x, m.y, back, r, lerp(atk.range - r, atk.range * 0.45, easeOutCubic(atk.phaseProgress)), 3, 0.7);
   }
 
   /** 타마다 휘두르는 방향과 당기는 정도 */
