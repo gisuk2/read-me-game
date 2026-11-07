@@ -22,6 +22,11 @@ export interface AttackHitConfig {
   /** 부채꼴 판정의 각도 (도) */
   arcDeg: number;
   staminaCost: number;
+  /**
+   * 공격 중 이동 속도 (평소 이동 속도 대비 비율). 0이면 제자리 고정.
+   * 공격 방향은 움직여도 바뀌지 않는다.
+   */
+  moveSpeedRatio: number;
 }
 
 export interface PlayerConfig {
@@ -56,9 +61,15 @@ export interface PlayerConfig {
   };
   potion: {
     count: number;
-    /** 마시는 시간. 이 동안 움직일 수 없다 */
+    /** 마시는 시간. 이 동안 움직일 수 없다 (맞으면 끊기고 포션은 소모됨) */
     drinkMs: number;
     heal: number;
+  };
+  hit: {
+    /** 맞았을 때 아무것도 못 하는 시간 */
+    stunMs: number;
+    /** 맞은 반대 방향으로 밀려나는 거리 */
+    knockback: number;
   };
 }
 
@@ -76,9 +87,9 @@ export const PLAYER: PlayerConfig = {
     staminaCost: 25,
   },
   attackHits: [
-    { startupMs: 220, activeMs: 100, recoveryMs: 300, comboLinkFrom: 0.5, damage: 10, range: 56, arcDeg: 100, staminaCost: 12 },
-    { startupMs: 200, activeMs: 100, recoveryMs: 320, comboLinkFrom: 0.7, damage: 10, range: 56, arcDeg: 100, staminaCost: 12 },
-    { startupMs: 380, activeMs: 120, recoveryMs: 480, comboLinkFrom: 1, damage: 18, range: 66, arcDeg: 140, staminaCost: 18 },
+    { startupMs: 220, activeMs: 100, recoveryMs: 300, comboLinkFrom: 0.5, damage: 10, range: 56, arcDeg: 100, staminaCost: 12, moveSpeedRatio: 0.45 },
+    { startupMs: 200, activeMs: 100, recoveryMs: 320, comboLinkFrom: 0.7, damage: 10, range: 56, arcDeg: 100, staminaCost: 12, moveSpeedRatio: 0.45 },
+    { startupMs: 380, activeMs: 120, recoveryMs: 480, comboLinkFrom: 1, damage: 18, range: 66, arcDeg: 140, staminaCost: 18, moveSpeedRatio: 0 },
   ],
   attackDashCancelFrom: 0.4,
   parry: {
@@ -90,5 +101,9 @@ export const PLAYER: PlayerConfig = {
     count: 3,
     drinkMs: 900,
     heal: 40,
+  },
+  hit: {
+    stunMs: 350,
+    knockback: 36,
   },
 };

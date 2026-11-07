@@ -13,3 +13,6 @@
 | 11-07 | src/input/InputReader.ts | JustDown과 pointerdown 이벤트의 차이, 입력을 "한 번만 전달"하는 방식 | 보통 | ☐ |
 | 11-07 | src/entities/player/PlayerView.ts | Graphics의 beginPath / slice / fillPath 동작 | 낮음 | ☐ |
 | 11-07 | tests/PlayerModel.test.ts | 시간을 10ms씩 흘려보내며 테스트하는 방식 | 보통 | ☐ |
+| 11-07 | src/utils/shapes.ts | 회전된 직사각형 판정(좌표 회전), 부채꼴 가장자리 여유(asin) 계산 | 높음 | ☐ |
+| 11-07 | src/entities/boss/BossModel.ts | 가중 무작위 선택(choosePattern), 점프 포물선 4·t·(1−t) | 높음 | ☐ |
+| 11-07 | tests/BossModel.test.ts | 시드 고정 난수(선형 합동 생성기)로 무작위를 테스트하는 방법 | 보통 | ☐ |

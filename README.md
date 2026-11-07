@@ -24,7 +24,8 @@
 | [프로젝트 계획서](docs/00_project-plan.md) | 목표, 범위, AI 설계, 기술 스택, 시스템 구조, 마일스톤 |
 | [전투 시스템](docs/design/combat-system.md) | 조작, 자세 게이지, 일반 패턴, 적응 3단계, 공정성 원칙 |
 | [보스 패턴](docs/design/boss-patterns.md) | 잔상 시스템, 패턴 카드 |
-| [내러티브](docs/design/narrative.md) | 3막 구조, 가이드 NPC, 사망 리포트 |
+| [스토리](docs/design/story.md) | 세계관, 헬퍼, 막 구성, 전환점 |
+| [내러티브](docs/design/narrative.md) | 3막 구조, 헬퍼, 사망 리포트 |
 | [개발 일지](docs/devlog/) | 날짜별 작업 기록 |
 | [기술 결정 기록](docs/adr/) | 되돌리기 어려운 결정과 그 이유 |
 

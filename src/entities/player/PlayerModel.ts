@@ -3,7 +3,7 @@ import type { PlayerInput } from '../../input/types';
 import { clamp } from '../../utils/math';
 import { degToRad, normalize, type Vec2 } from '../../utils/geometry';
 
-export type PlayerState = 'idle' | 'move' | 'dash' | 'attack' | 'parry' | 'potion' | 'dead';
+export type PlayerState = 'idle' | 'move' | 'dash' | 'attack' | 'parry' | 'potion' | 'hit' | 'dead';
 export type AttackPhase = 'startup' | 'active' | 'recovery';
 
 /**
@@ -19,6 +19,8 @@ export type PlayerEvent =
   | { type: 'staminaDenied'; action: 'dash' | 'attack' | 'parry' };
 
 export interface AttackInfo {
+  /** 휘두를 때마다 1씩 늘어나는 번호. 한 번 휘두르면 한 번만 맞도록 판정에서 쓴다 */
+  serial: number;
   comboIndex: number;
   phase: AttackPhase;
   /** 현재 단계 안에서의 진행률 0~1 (모션 그리기용) */
@@ -54,7 +56,9 @@ export interface Bounds {
  *                             ─(시간 끝)→ idle
  *             ─(패링)→ parry ─(시간 끝)→ idle
  *             ─(포션)→ potion ─(시간 끝, 회복)→ idle
- *   준비·판정 중에는 어떤 입력으로도 취소되지 않는다 (동작 고정).
+ *   (어느 상태든) ─(피격)→ hit ─(경직 끝)→ idle   /   체력 0 → dead
+ *   준비·판정 중에는 대시·패링으로 취소되지 않는다 (동작 고정).
+ *   단, 1·2타는 공격 중에도 느리게 움직일 수 있다 (moveSpeedRatio). 3타는 제자리.
  */
 export class PlayerModel {
   x: number;
@@ -73,7 +77,10 @@ export class PlayerModel {
   private dashDir: Vec2 = { x: 1, y: 0 };
 
   private comboIndex = 0;
+  private attackSerial = 0;
   private attackAngle = 0;
+  private hitStart: Vec2 = { x: 0, y: 0 };
+  private hitDir: Vec2 = { x: 0, y: 0 };
   /** 공격 중 클릭으로 다음 타를 예약했는가 */
   private attackBuffered = false;
 
@@ -96,6 +103,14 @@ export class PlayerModel {
     return this._state;
   }
 
+  get radius(): number {
+    return this.cfg.radius;
+  }
+
+  get isDead(): boolean {
+    return this._state === 'dead';
+  }
+
   /** 대시 시작 후 invulnMs 동안 무적 */
   get isInvulnerable(): boolean {
     return this._state === 'dash' && this.stateTimeMs < this.cfg.dash.invulnMs;
@@ -116,6 +131,7 @@ export class PlayerModel {
     const hit = this.currentHit();
     const phase = this.attackPhase(hit);
     return {
+      serial: this.attackSerial,
       comboIndex: this.comboIndex,
       phase,
       phaseProgress: this.attackPhaseProgress(hit, phase),
@@ -157,7 +173,10 @@ export class PlayerModel {
         this.updateDash();
         break;
       case 'attack':
-        this.updateAttack(input);
+        this.updateAttack(input, dtMs);
+        break;
+      case 'hit':
+        this.updateHit();
         break;
       case 'parry':
         this.updateParry();
@@ -241,6 +260,7 @@ export class PlayerModel {
   }
 
   private startAttack(comboIndex: number): void {
+    this.attackSerial += 1;
     this.comboIndex = comboIndex;
     this.attackAngle = this.facing; // 공격 방향은 시작 순간에 고정
     this.attackBuffered = false;
@@ -256,10 +276,16 @@ export class PlayerModel {
    *   (경직을 건너뛰지 않으므로 휘두른 뒤 멈추는 순간이 생긴다.
    *    누르고 있다가 그 전에 손을 떼면 그 타에서 멈춘다)
    */
-  private updateAttack(input: PlayerInput): void {
+  private updateAttack(input: PlayerInput, dtMs: number): void {
     if (input.attack) this.attackBuffered = true;
 
     const hit = this.currentHit();
+    // 1·2타는 느리게 이동 가능 (방향은 그대로), 3타는 제자리
+    if (hit.moveSpeedRatio > 0) {
+      const dir = normalize(input.moveX, input.moveY);
+      const step = this.cfg.moveSpeed * hit.moveSpeedRatio * (dtMs / 1000);
+      this.setPosition(this.x + dir.x * step, this.y + dir.y * step);
+    }
     const phase = this.attackPhase(hit);
     const totalMs = hit.startupMs + hit.activeMs + hit.recoveryMs;
     const hasNextHit = this.comboIndex < this.cfg.attackHits.length - 1;
@@ -303,6 +329,39 @@ export class PlayerModel {
       this.events.push({ type: 'potionHealed', amount: this.hp - before });
       this.enter('idle');
     }
+  }
+
+  // ───────────────────────── 피격 ─────────────────────────
+
+  /**
+   * 공격에 맞음 (CombatSystem이 호출). 하던 행동은 끊긴다 (마시던 포션은 소모된 채로 사라짐).
+   * 맞은 반대 방향으로 밀려나고, 경직 동안 아무것도 못 한다.
+   */
+  applyHit(damage: number, fromX: number, fromY: number): { died: boolean } {
+    if (this._state === 'dead') return { died: false };
+    this.hp = Math.max(0, this.hp - damage);
+    if (this.hp === 0) {
+      this.enter('dead');
+      return { died: true };
+    }
+    const away = normalize(this.x - fromX, this.y - fromY);
+    this.hitDir = away.x !== 0 || away.y !== 0 ? away : { x: -Math.cos(this.facing), y: -Math.sin(this.facing) };
+    this.hitStart = { x: this.x, y: this.y };
+    this.enter('hit');
+    return { died: false };
+  }
+
+  /** 보스 몸과 겹치지 않도록 밀어낼 때 사용 */
+  nudge(dx: number, dy: number): void {
+    this.setPosition(this.x + dx, this.y + dy);
+  }
+
+  private updateHit(): void {
+    const { stunMs, knockback } = this.cfg.hit;
+    const t = Math.min(1, this.stateTimeMs / stunMs);
+    const eased = 1 - Math.pow(1 - t, 3);
+    this.setPosition(this.hitStart.x + this.hitDir.x * knockback * eased, this.hitStart.y + this.hitDir.y * knockback * eased);
+    if (this.stateTimeMs >= stunMs) this.enter('idle');
   }
 
   // ───────────────────────── 보조 ─────────────────────────

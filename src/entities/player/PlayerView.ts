@@ -25,7 +25,8 @@ export class PlayerView {
     scene: Phaser.Scene,
     private readonly radius: number,
   ) {
-    this.g = scene.add.graphics();
+    // 그리는 순서: 보스 예고(0) → 플레이어(1) → 보스 몸체(2) → HUD(10)
+    this.g = scene.add.graphics().setDepth(1);
   }
 
   draw(m: PlayerModel): void {
@@ -44,6 +45,20 @@ export class PlayerView {
   private drawBody(m: PlayerModel): void {
     const g = this.g;
     const r = this.radius;
+    // 쓰러짐: 속이 빈 원 + X
+    if (m.isDead) {
+      g.lineStyle(2, BLACK, 0.6);
+      g.strokeCircle(m.x, m.y, r);
+      g.lineBetween(m.x - r * 0.6, m.y - r * 0.6, m.x + r * 0.6, m.y + r * 0.6);
+      g.lineBetween(m.x + r * 0.6, m.y - r * 0.6, m.x - r * 0.6, m.y + r * 0.6);
+      return;
+    }
+    // 맞아서 경직 중: 회색
+    if (m.state === 'hit') {
+      g.fillStyle(GREY, 1);
+      g.fillCircle(m.x, m.y, r);
+      return;
+    }
     // 무적이면 속이 빈 원
     if (m.isInvulnerable) {
       g.lineStyle(2, BLACK, 1);
@@ -82,8 +97,8 @@ export class PlayerView {
     const r = this.radius;
 
     if (!atk) {
-      // 쉬는 자세 (포션 마시는 중엔 검을 그리지 않음)
-      if (m.state === 'potion') return;
+      // 쉬는 자세 (포션 마시는 중·쓰러짐엔 검을 그리지 않음)
+      if (m.state === 'potion' || m.isDead) return;
       const len = 56 * REST_LENGTH_RATIO;
       this.drawBlade(m.x, m.y, m.facing + REST_ANGLE_OFFSET, r, len, 3, 1);
       return;

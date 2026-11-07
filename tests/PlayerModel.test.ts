@@ -107,13 +107,31 @@ describe('공격', () => {
     expect(p.attack?.phase).toBe('recovery');
   });
 
-  it('공격이 시작되면 이동·대시·패링 입력으로 취소되지 않는다 (동작 고정)', () => {
+  it('공격이 시작되면 대시·패링 입력으로 취소되지 않는다 (동작 고정)', () => {
     const p = newPlayer();
     press(p, { attack: true });
     hold(p, { moveX: 1, dash: true, parry: true }, hit1.startupMs);
     expect(p.state).toBe('attack');
-    expect(p.x).toBe(5000);
     expect(p.stamina).toBe(PLAYER.maxStamina - hit1.staminaCost);
+  });
+
+  it('1타는 공격 중에도 느리게(moveSpeedRatio) 움직일 수 있다', () => {
+    const p = newPlayer();
+    press(p, { attack: true });
+    hold(p, { moveX: 1 }, 200);
+    expect(p.state).toBe('attack');
+    expect(p.x - 5000).toBeCloseTo(PLAYER.moveSpeed * hit1.moveSpeedRatio * 0.2, 5);
+  });
+
+  it('3타는 제자리에서만 나간다 (이동 입력이 있어도 움직이지 않음)', () => {
+    const [h1, h2, h3] = PLAYER.attackHits;
+    expect(h3.moveSpeedRatio).toBe(0);
+    const p = newPlayer();
+    hold(p, { attackHeld: true }, linkMs(h1) + linkMs(h2) + STEP_MS * 2); // 3타 시작
+    expect(p.attack?.comboIndex).toBe(2);
+    const x = p.x;
+    hold(p, { attackHeld: true, moveX: 1 }, 200);
+    expect(p.x).toBe(x);
   });
 
   it('공격 방향은 시작 순간의 조준 방향으로 고정된다', () => {
@@ -312,5 +330,53 @@ describe('모션 진행률', () => {
     expect(p.parry?.phase).toBe('active');
     wait(p, PLAYER.parry.activeMs);
     expect(p.parry?.phase).toBe('recovery');
+  });
+});
+
+describe('피격과 사망', () => {
+  it('맞으면 체력이 줄고, 경직 동안 맞은 반대쪽으로 밀려난 뒤 idle로 돌아온다', () => {
+    const p = newPlayer();
+    const result = p.applyHit(30, 4900, 5000); // 왼쪽에서 맞음
+    expect(result.died).toBe(false);
+    expect(p.hp).toBe(PLAYER.maxHp - 30);
+    expect(p.state).toBe('hit');
+    wait(p, PLAYER.hit.stunMs);
+    expect(p.x - 5000).toBeCloseTo(PLAYER.hit.knockback, 5);
+    expect(p.state).toBe('idle');
+  });
+
+  it('경직 중에는 입력이 먹히지 않는다', () => {
+    const p = newPlayer();
+    p.applyHit(10, 4900, 5000);
+    press(p, { dash: true, attack: true });
+    expect(p.state).toBe('hit');
+  });
+
+  it('포션을 마시다 맞으면 끊기고, 포션은 이미 소모되어 회복되지 않는다', () => {
+    const p = newPlayer();
+    p.hp = 50;
+    press(p, { potion: true });
+    p.applyHit(10, 4900, 5000);
+    wait(p, PLAYER.potion.drinkMs + PLAYER.hit.stunMs);
+    expect(p.hp).toBe(40);
+    expect(p.potions).toBe(PLAYER.potion.count - 1);
+  });
+
+  it('체력이 0이 되면 쓰러지고, 이후 입력과 피격을 무시한다', () => {
+    const p = newPlayer();
+    expect(p.applyHit(PLAYER.maxHp, 4900, 5000).died).toBe(true);
+    expect(p.isDead).toBe(true);
+    hold(p, { moveX: 1, attack: true }, 200);
+    expect(p.x).toBe(5000);
+    expect(p.applyHit(10, 4900, 5000).died).toBe(false);
+  });
+
+  it('휘두를 때마다 공격 번호(serial)가 달라진다 (한 번 휘두르면 한 번만 맞히기 위함)', () => {
+    const p = newPlayer();
+    press(p, { attack: true });
+    const first = p.attack!.serial;
+    wait(p, totalMs(PLAYER.attackHits[0]));
+    press(p, { attack: true });
+    expect(p.attack!.serial).not.toBe(first);
   });
 });
