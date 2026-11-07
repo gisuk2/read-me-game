@@ -8,4 +8,8 @@
 |---|---|---|---|---|
 | 11-07 | tsconfig.json | 각 옵션(moduleResolution: bundler 등)의 의미 | 낮음 | ☐ |
 | 11-07 | .github/workflows/deploy.yml | GitHub Actions 배포 단계별 동작 | 낮음 | ☐ |
-| 11-07 | src/scenes/BootScene.ts | Phaser 씬의 생명주기(create/update) 전체 흐름 | 보통 | ☐ |
+| 11-07 | src/scenes/GameScene.ts | Phaser 씬의 생명주기(create/update) 전체 흐름 | 보통 | ☐ |
+| 11-07 | src/entities/player/PlayerModel.ts | 상태 머신 전체 흐름 (특히 공격 예약 → 다음 타 연결) | 높음 | ☐ |
+| 11-07 | src/input/InputReader.ts | JustDown과 pointerdown 이벤트의 차이, 입력을 "한 번만 전달"하는 방식 | 보통 | ☐ |
+| 11-07 | src/entities/player/PlayerView.ts | Graphics의 beginPath / slice / fillPath 동작 | 낮음 | ☐ |
+| 11-07 | tests/PlayerModel.test.ts | 시간을 10ms씩 흘려보내며 테스트하는 방식 | 보통 | ☐ |
